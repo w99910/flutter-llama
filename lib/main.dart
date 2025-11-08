@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 // Correct imports for FFI and Platform detection
 import 'dart:io';
 
+import 'package:flutter_application_1/chat_template.dart';
 import 'package:flutter_application_1/internal/huggingface.dart';
 import 'package:flutter_application_1/internal/llama_request.dart';
 import 'package:flutter_application_1/lcontroller.dart';
@@ -11,7 +12,12 @@ import 'package:path_provider/path_provider.dart';
 
 // STEP 1: DEFINE A DATA CLASS TO PASS ARGUMENTS (BEST PRACTICE)
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Load chat templates at startup
+  await ChatTemplateManager().loadTemplates();
+
   runApp(const MyApp());
 }
 
@@ -75,16 +81,12 @@ class _ChatScreenState extends State<ChatScreen> {
   String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
   String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
 
+  // Chat template
+  ChatTemplate? _currentTemplate;
+
   // Detect model type from filename
   String get _modelType {
-    final lowerName = _currentFileName.toLowerCase();
-    if (lowerName.contains('qwen')) {
-      return 'qwen';
-    } else if (lowerName.contains('gemma')) {
-      return 'gemma';
-    }
-    // Default to gemma if unknown
-    return 'gemma';
+    return _currentTemplate?.name ?? 'Unknown';
   }
 
   @override
@@ -104,6 +106,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Initializes the Llama controller and updates the UI state.
   void _initializeLlama() async {
+    // Detect and set the chat template
+    _currentTemplate = ChatTemplateManager().detectTemplate(_currentFileName);
+
     final dir = await getApplicationDocumentsDirectory();
     final savePath = '${dir.path}/$_currentFileName';
     final file = File(savePath);
@@ -145,28 +150,13 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// Formats the prompt using Gemma chat template
-  String _formatPromptForGemma(String userMessage) {
-    // Gemma chat template format
-    return "<start_of_turn>user\n$userMessage<end_of_turn>\n<start_of_turn>model\n";
-  }
-
-  /// Formats the prompt using Qwen chat template
-  String _formatPromptForQwen(String userMessage) {
-    // Qwen official chat template format (standard version without thinking)
-    // Based on: https://github.com/QwenLM/Qwen/blob/main/docs/chat_template.md
-    return "<|im_start|>user\n$userMessage<|im_end|>\n<|im_start|>assistant\n";
-  }
-
-  /// Formats the prompt based on the detected model type
+  /// Formats the prompt using the current chat template
   String _formatPrompt(String userMessage) {
-    switch (_modelType) {
-      case 'qwen':
-        return _formatPromptForQwen(userMessage);
-      case 'gemma':
-      default:
-        return _formatPromptForGemma(userMessage);
+    if (_currentTemplate == null) {
+      // Fallback to simple format if no template available
+      return userMessage;
     }
+    return _currentTemplate!.formatUserMessage(userMessage);
   }
 
   /// Handles sending the prompt to the Llama model.
@@ -209,22 +199,20 @@ class _ChatScreenState extends State<ChatScreen> {
       print("Received token #$tokenCount: '$tokenPiece'");
       responseBuffer.write(tokenPiece);
 
-      // Get current text and clean it from all template tags
+      // Get current text
       String currentText = responseBuffer.toString();
       print("Current buffer: '$currentText'");
 
-      // Check if we've hit the end-of-turn marker - stop streaming
-      // Support both Gemma and Qwen formats (including malformed versions)
-      if (currentText.contains('<end_of_turn>') ||
-          currentText.contains('</start_of_turn>') ||
-          currentText.contains('<|im_end|>') ||
-          currentText.contains('|im_end|')) {
-        print("End marker detected, stopping stream");
-        // Extract thinking before cleaning
-        final thinking = _extractThinking(currentText);
+      // Check if we've hit a stop sequence - stop streaming
+      if (_currentTemplate != null &&
+          _currentTemplate!.containsStopSequence(currentText)) {
+        print("Stop sequence detected, stopping stream");
 
-        // Clean any remaining tags
-        final cleanedText = _cleanTemplateTags(currentText);
+        // Extract thinking before cleaning
+        final thinking = _currentTemplate!.extractThinking(currentText);
+
+        // Clean the text
+        final cleanedText = _currentTemplate!.cleanResponse(currentText);
         print("Cleaned final text: '$cleanedText'");
 
         setState(() {
@@ -238,10 +226,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       // Extract thinking (if present)
-      final thinking = _extractThinking(currentText);
+      final thinking = _currentTemplate?.extractThinking(currentText);
 
       // Clean the text from template tags before displaying
-      final cleanedText = _cleanTemplateTags(currentText);
+      final cleanedText =
+          _currentTemplate?.cleanResponse(currentText) ?? currentText;
 
       setState(() {
         // Update the last message with the accumulated response
@@ -258,8 +247,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Final update with cleaned text if we have any content
     if (responseBuffer.isNotEmpty) {
-      final thinking = _extractThinking(responseBuffer.toString());
-      final cleanedText = _cleanTemplateTags(responseBuffer.toString());
+      final thinking = _currentTemplate?.extractThinking(
+        responseBuffer.toString(),
+      );
+      final cleanedText =
+          _currentTemplate?.cleanResponse(responseBuffer.toString()) ??
+          responseBuffer.toString();
 
       if (cleanedText.isNotEmpty) {
         setState(() {
@@ -276,101 +269,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _isAssistantTyping = false;
     });
     _scrollToBottom();
-  }
-
-  /// Extract thinking content from Qwen responses
-  /// Returns partial thinking even if </think> tag hasn't appeared yet
-  String? _extractThinking(String text) {
-    if (text.contains('<think>')) {
-      final thinkStart = text.indexOf('<think>');
-      final thinkEnd = text.indexOf('</think>');
-      if (thinkEnd != -1 && thinkEnd > thinkStart) {
-        // Complete thinking block found
-        final thinking = text
-            .substring(thinkStart + '<think>'.length, thinkEnd)
-            .trim();
-        return thinking.isNotEmpty ? thinking : null;
-      } else if (thinkStart != -1) {
-        // Partial thinking (still streaming)
-        final thinking = text.substring(thinkStart + '<think>'.length).trim();
-        return thinking.isNotEmpty ? thinking : null;
-      }
-    }
-    return null;
-  }
-
-  /// Remove all template tags from the text (supports Gemma and Qwen formats)
-  /// Returns cleaned text with thinking removed
-  String _cleanTemplateTags(String text) {
-    String cleaned = text;
-
-    // Remove Qwen thinking tags and content if present
-    if (cleaned.contains('<think>')) {
-      final thinkStart = cleaned.indexOf('<think>');
-      final thinkEnd = cleaned.indexOf('</think>');
-      if (thinkEnd != -1 && thinkEnd > thinkStart) {
-        // Complete thinking block - remove it
-        cleaned =
-            cleaned.substring(0, thinkStart) +
-            cleaned.substring(thinkEnd + '</think>'.length);
-      } else {
-        // Partial thinking (still streaming) - remove everything from <think> onwards
-        cleaned = cleaned.substring(0, thinkStart);
-      }
-    }
-
-    // Clean all template tags - order matters!
-    cleaned = cleaned
-        // Gemma tags
-        .replaceAll('<start_of_turn>model\n', '')
-        .replaceAll('<start_of_turn>user\n', '')
-        .replaceAll('<start_of_turn>model', '')
-        .replaceAll('<start_of_turn>user', '')
-        .replaceAll('<start_of_turn>', '')
-        .replaceAll('</start_of_turn>', '')
-        .replaceAll('<end_of_turn>', '')
-        .replaceAll('<start_of_image>', '')
-        // Qwen tags - handle complete tags first
-        .replaceAll('<|im_start|>system\n', '')
-        .replaceAll('<|im_start|>user\n', '')
-        .replaceAll('<|im_start|>assistant\n', '')
-        .replaceAll('<|im_start|>system', '')
-        .replaceAll('<|im_start|>user', '')
-        .replaceAll('<|im_start|>assistant', '')
-        .replaceAll('<|im_start|>', '')
-        .replaceAll('<|im_end|>\n', '')
-        .replaceAll('<|im_end|>', '')
-        // Handle malformed/partial versions that might appear during streaming
-        .replaceAll('|im_start|system\n', '')
-        .replaceAll('|im_start|user\n', '')
-        .replaceAll('|im_start|assistant\n', '')
-        .replaceAll('|im_start|system', '')
-        .replaceAll('|im_start|user', '')
-        .replaceAll('|im_start|assistant', '')
-        .replaceAll('|im_start|', '')
-        .replaceAll('|im_end|\n', '')
-        .replaceAll('|im_end|', '')
-        // Clean any partial prefixes that might show
-        .replaceAll('assistant:\n', '')
-        .replaceAll('assistant:', '')
-        .replaceAll('user:\n', '')
-        .replaceAll('user:', '')
-        .replaceAll('system:\n', '')
-        .replaceAll('system:', '')
-        // Tool tags
-        .replaceAll('<tool_call>', '')
-        .replaceAll('</tool_call>', '')
-        .replaceAll('<tool_response>', '')
-        .replaceAll('</tool_response>', '')
-        // Clean any remaining think tags
-        .replaceAll('<think>', '')
-        .replaceAll('</think>', '');
-
-    // Use regex to clean any remaining <| patterns at start/end
-    cleaned = cleaned.replaceAll(RegExp(r'^<\|?\s*'), '');
-    cleaned = cleaned.replaceAll(RegExp(r'\s*\|?>?\s*$'), '');
-
-    return cleaned.trim();
   }
 
   void _scrollToBottom() {

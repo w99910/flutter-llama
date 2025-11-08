@@ -1,6 +1,7 @@
 import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter_application_1/internal/llama_cpp_ffi.dart';
 
@@ -10,11 +11,31 @@ class LlamaService {
   ffi.Pointer<llama_context> _context = ffi.nullptr;
 
   LlamaService() {
-    final dylib = ffi.DynamicLibrary.open(
-      'libllama.so',
-    ); // Or platform-specific path
+    // Load the library based on the platform
+    final dylib = _loadNativeLibrary();
     _bindings = llama_cpp(dylib);
     _bindings.llama_backend_init(); // Initialize the backend
+  }
+
+  /// Load the native library based on the platform
+  ffi.DynamicLibrary _loadNativeLibrary() {
+    if (Platform.isAndroid) {
+      // On Android, libraries in jniLibs are automatically extracted
+      // and can be loaded by name
+      return ffi.DynamicLibrary.open('libllama.so');
+    } else if (Platform.isIOS) {
+      // On iOS, use DynamicLibrary.process() for frameworks
+      return ffi.DynamicLibrary.process();
+    } else if (Platform.isLinux) {
+      // On Linux, specify the full path or use system library path
+      return ffi.DynamicLibrary.open('libllama.so');
+    } else if (Platform.isWindows) {
+      return ffi.DynamicLibrary.open('llama.dll');
+    } else if (Platform.isMacOS) {
+      return ffi.DynamicLibrary.open('libllama.dylib');
+    } else {
+      throw UnsupportedError('Platform not supported');
+    }
   }
 
   /// Loads a GGUF model from the given file path.
@@ -154,7 +175,8 @@ class LlamaService {
     }
 
     // Clear the KV cache to avoid contamination from previous prompts
-    _bindings.llama_kv_self_clear(_context);
+    final memory = _bindings.llama_get_memory(_context);
+    _bindings.llama_memory_clear(memory, true);
 
     // Use special=true to properly parse chat template tokens like <|im_start|>, <|im_end|>
     // Set addBos=false since chat templates handle BOS themselves
@@ -283,7 +305,8 @@ class LlamaService {
     }
 
     // CRITICAL: Clear the KV cache before each prompt to avoid contamination
-    _bindings.llama_kv_self_clear(_context);
+    final memory = _bindings.llama_get_memory(_context);
+    _bindings.llama_memory_clear(memory, true);
 
     // Use special=true to properly parse chat template tokens like <|im_start|>, <|im_end|>
     // Set addBos=false since chat templates handle BOS themselves

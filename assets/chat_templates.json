@@ -1,0 +1,185 @@
+{
+    "gemma": {
+        "name": "Gemma",
+        "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "<start_of_turn>user\n",
+        "system_suffix": "<end_of_turn>\n",
+        "user_prefix": "<start_of_turn>user\n",
+        "user_suffix": "<end_of_turn>\n",
+        "assistant_prefix": "<start_of_turn>model\n",
+        "assistant_suffix": "<end_of_turn>\n",
+        "stop_sequences": [
+            "<end_of_turn>",
+            "</start_of_turn>"
+        ],
+        "add_generation_prompt": true
+    },
+    "qwen": {
+        "name": "Qwen",
+        "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "<|im_start|>system\n",
+        "system_suffix": "<|im_end|>\n",
+        "user_prefix": "<|im_start|>user\n",
+        "user_suffix": "<|im_end|>\n",
+        "assistant_prefix": "<|im_start|>assistant\n",
+        "assistant_suffix": "<|im_end|>\n",
+        "stop_sequences": [
+            "<|im_end|>",
+            "|im_end|"
+        ],
+        "add_generation_prompt": true,
+        "supports_thinking": true,
+        "thinking_tags": {
+            "start": "<think>",
+            "end": "</think>"
+        }
+    },
+    "llama2": {
+        "name": "Llama 2",
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "system_prefix": "<<SYS>>\n",
+        "system_suffix": "\n<</SYS>>\n\n",
+        "user_prefix": "[INST] ",
+        "user_suffix": " [/INST]",
+        "assistant_prefix": " ",
+        "assistant_suffix": " </s>",
+        "stop_sequences": [
+            "</s>"
+        ],
+        "add_generation_prompt": false
+    },
+    "llama3": {
+        "name": "Llama 3",
+        "bos_token": "<|begin_of_text|>",
+        "eos_token": "<|eot_id|>",
+        "system_prefix": "<|start_header_id|>system<|end_header_id|>\n\n",
+        "system_suffix": "<|eot_id|>",
+        "user_prefix": "<|start_header_id|>user<|end_header_id|>\n\n",
+        "user_suffix": "<|eot_id|>",
+        "assistant_prefix": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+        "assistant_suffix": "<|eot_id|>",
+        "stop_sequences": [
+            "<|eot_id|>"
+        ],
+        "add_generation_prompt": true
+    },
+    "mistral": {
+        "name": "Mistral",
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "system_prefix": "",
+        "system_suffix": "\n\n",
+        "user_prefix": "[INST] ",
+        "user_suffix": " [/INST]",
+        "assistant_prefix": "",
+        "assistant_suffix": "</s>",
+        "stop_sequences": [
+            "</s>"
+        ],
+        "add_generation_prompt": false
+    },
+    "chatml": {
+        "name": "ChatML",
+        "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "<|im_start|>system\n",
+        "system_suffix": "<|im_end|>\n",
+        "user_prefix": "<|im_start|>user\n",
+        "user_suffix": "<|im_end|>\n",
+        "assistant_prefix": "<|im_start|>assistant\n",
+        "assistant_suffix": "<|im_end|>\n",
+        "stop_sequences": [
+            "<|im_end|>"
+        ],
+        "add_generation_prompt": true
+    },
+    "alpaca": {
+        "name": "Alpaca",
+        "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "",
+        "system_suffix": "\n",
+        "user_prefix": "### Instruction:\n",
+        "user_suffix": "\n\n",
+        "assistant_prefix": "### Response:\n",
+        "assistant_suffix": "\n\n",
+        "stop_sequences": [],
+        "add_generation_prompt": true
+    },
+    "vicuna": {
+        "name": "Vicuna",
+        "bos_token": "",
+        "eos_token": "</s>",
+        "system_prefix": "",
+        "system_suffix": "\n\n",
+        "user_prefix": "USER: ",
+        "user_suffix": "\n",
+        "assistant_prefix": "ASSISTANT: ",
+        "assistant_suffix": "</s>\n",
+        "stop_sequences": [
+            "</s>"
+        ],
+        "add_generation_prompt": true
+    },
+    "phi2": {
+        "name": "Phi-2",
+        "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "",
+        "system_suffix": "\n\n",
+        "user_prefix": "Instruct: ",
+        "user_suffix": "\n",
+        "assistant_prefix": "Output: ",
+        "assistant_suffix": "\n",
+        "stop_sequences": [],
+        "add_generation_prompt": true
+    },
+    "phi3": {
+        "name": "Phi-3",
+        "bos_token": "<s>",
+        "eos_token": "",
+        "system_prefix": "<|system|>\n",
+        "system_suffix": "<|end|>\n",
+        "user_prefix": "<|user|>\n",
+        "user_suffix": "<|end|>\n",
+        "assistant_prefix": "<|assistant|>\n",
+        "assistant_suffix": "<|end|>\n",
+        "stop_sequences": [
+            "<|end|>"
+        ],
+        "add_generation_prompt": true
+    },
+    "zephyr": {
+        "name": "Zephyr",
+        "bos_token": "",
+        "eos_token": "</s>",
+        "system_prefix": "<|system|>\n",
+        "system_suffix": "</s>",
+        "user_prefix": "<|user|>\n",
+        "user_suffix": "</s>",
+        "assistant_prefix": "<|assistant|>\n",
+        "assistant_suffix": "</s>",
+        "stop_sequences": [
+            "</s>"
+        ],
+        "add_generation_prompt": true
+    },
+    "openchat": {
+        "name": "OpenChat 3.5",
+        "bos_token": "<s>",
+        "eos_token": "",
+        "system_prefix": "",
+        "system_suffix": "",
+        "user_prefix": "GPT4 Correct User: ",
+        "user_suffix": "<|end_of_turn|>",
+        "assistant_prefix": "GPT4 Correct Assistant: ",
+        "assistant_suffix": "<|end_of_turn|>",
+        "stop_sequences": [
+            "<|end_of_turn|>"
+        ],
+        "add_generation_prompt": true
+    }
+}
