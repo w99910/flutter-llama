@@ -1,4 +1,5 @@
 import 'dart:ffi' as ffi; // Core FFI library for Pointer, Int32, etc.
+import 'dart:io'; // For Platform detection
 import 'package:ffi/ffi.dart'; // Utility package for Utf8, calloc, etc.
 
 // --- Handles (Opaque types) ---
@@ -108,7 +109,28 @@ class LlamaFFI {
   late final LlamaFreeModelDart llama_free_model;
 
   LlamaFFI() {
-    dylib = ffi.DynamicLibrary.open('libllama.so');
+    // Load the correct native library based on platform
+    if (Platform.isIOS || Platform.isMacOS) {
+      // On iOS/macOS, try to load from the app's Frameworks directory
+      // The framework should be manually added to the Xcode project
+      try {
+        dylib = ffi.DynamicLibrary.process();
+      } catch (e) {
+        // Fallback: try loading the framework directly
+        dylib = ffi.DynamicLibrary.open('llama.framework/llama');
+      }
+    } else if (Platform.isAndroid) {
+      // On Android, load the .so file
+      dylib = ffi.DynamicLibrary.open('libllama.so');
+    } else if (Platform.isLinux) {
+      dylib = ffi.DynamicLibrary.open('libllama.so');
+    } else if (Platform.isWindows) {
+      dylib = ffi.DynamicLibrary.open('llama.dll');
+    } else {
+      throw UnsupportedError(
+        'Unsupported platform: ${Platform.operatingSystem}',
+      );
+    }
 
     llama_load_model_from_file = dylib
         .lookup<ffi.NativeFunction<LlamaLoadModelFromFileNative>>(
