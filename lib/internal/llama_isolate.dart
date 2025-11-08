@@ -1,0 +1,59 @@
+import 'dart:isolate';
+import 'package:flutter_application_1/internal/llama_service.dart'; // Your LlamaService class
+import 'package:flutter_application_1/internal/llama_request.dart';
+
+// This is the entry point for our new isolate.
+void llamaIsolateEntry(Map<String, dynamic> args) async {
+  final mainSendPort = args['port'] as SendPort;
+  final modelPath =
+      args['path'] as String; // Use the path passed from the main isolate
+
+  final isolateReceivePort = ReceivePort();
+  mainSendPort.send(isolateReceivePort.sendPort);
+
+  // Initialize the service and load the model ONCE.
+  final llamaService = LlamaService();
+  final success = llamaService.loadModel(modelPath);
+
+  if (!success) {
+    print("Llama Isolate: FAILED to load model at '$modelPath'.");
+    // Optionally send an error message back to the main isolate
+    mainSendPort.send('ERROR: MODEL_LOAD_FAILED');
+    return; // Exit the isolate if the model fails to load
+  }
+
+  print("Llama Isolate: Model loaded and ready.");
+
+  // Listen for requests from the main thread (this part remains the same)
+  await for (final message in isolateReceivePort) {
+    if (message is LlamaRequest) {
+      final prompt = message.prompt;
+      final params = message.params;
+      print("Llama Isolate: Received prompt: '$prompt'");
+
+      // Stream tokens back to the UI as they're generated with custom parameters
+      await llamaService.runPromptStreaming(
+        prompt,
+        (tokenPiece) {
+          message.port.send(LlamaResponse(tokenPiece, isComplete: false));
+        },
+        temperature: params.temperature,
+        topK: params.topK,
+        topP: params.topP,
+        minP: params.minP,
+        penaltyLastN: params.penaltyLastN,
+        penaltyRepeat: params.penaltyRepeat,
+        penaltyFreq: params.penaltyFreq,
+        penaltyPresent: params.penaltyPresent,
+        maxTokens: params.maxTokens,
+      );
+
+      // Send final completion signal
+      message.port.send(LlamaResponse('', isComplete: true));
+    } else if (message == 'SHUTDOWN') {
+      print("Llama Isolate: Shutting down...");
+      llamaService.dispose();
+      Isolate.current.kill();
+    }
+  }
+}
