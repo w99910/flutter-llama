@@ -58,7 +58,11 @@ class ChatTemplate {
   }
 
   /// Format a single user message
-  String formatUserMessage(String message, {String? systemMessage}) {
+  String formatUserMessage(
+    String message, {
+    String? systemMessage,
+    bool hasImage = false,
+  }) {
     final buffer = StringBuffer();
 
     // Add system message if provided
@@ -69,7 +73,20 @@ class ChatTemplate {
     }
 
     // Add user message
-    buffer.write(userPrefix);
+    // For SmolVLM, adjust the prefix based on whether there's an image
+    String prefix = userPrefix;
+    if (name.toLowerCase().contains('vlm') && hasImage) {
+      // Replace ': ' with ':' for SmolVLM when image is present
+      prefix = prefix.replaceAll(': ', ':');
+    }
+
+    buffer.write(prefix);
+
+    // For multimodal models like SmolVLM, add image token if image is present
+    if (hasImage && name.toLowerCase().contains('vlm')) {
+      buffer.write('<image>');
+    }
+
     buffer.write(message.trim());
     buffer.write(userSuffix);
 
@@ -158,10 +175,16 @@ class ChatTemplate {
     cleaned = cleaned
         .replaceAll('assistant:\n', '')
         .replaceAll('assistant:', '')
+        .replaceAll('Assistant:\n', '')
+        .replaceAll('Assistant:', '')
         .replaceAll('user:\n', '')
         .replaceAll('user:', '')
+        .replaceAll('User:\n', '')
+        .replaceAll('User:', '')
         .replaceAll('system:\n', '')
-        .replaceAll('system:', '');
+        .replaceAll('system:', '')
+        .replaceAll('<|im_start|>', '')
+        .replaceAll('<image>', '');
 
     return cleaned.trim();
   }
@@ -207,9 +230,15 @@ class ChatTemplateManager {
   ChatTemplate? detectTemplate(String filename) {
     final lower = filename.toLowerCase();
 
-    if (lower.contains('qwen')) {
+    if (lower.contains('smolvlm') || lower.contains('smol-vlm')) {
+      return _templates['smolvlm'];
+    } else if (lower.contains('qwen')) {
       return _templates['qwen'];
-    } else if (lower.contains('gemma')) {
+    } else if (lower.contains('gemma-3') || lower.contains('gemma3')) {
+      return _templates['gemma3'];
+    } else if (lower.contains('gemma-2') ||
+        lower.contains('gemma2') ||
+        lower.contains('gemma')) {
       return _templates['gemma'];
     } else if (lower.contains('llama-3') || lower.contains('llama3')) {
       return _templates['llama3'];

@@ -30,11 +30,13 @@ class LlamaRequest {
   final SendPort port; // Port to send the response back on
   final String prompt;
   final GenerationParams params;
+  final List<String>? imagePaths; // Optional image paths for vision models
 
   LlamaRequest(
     this.port,
     this.prompt, {
     this.params = const GenerationParams(),
+    this.imagePaths,
   });
 }
 

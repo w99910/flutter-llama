@@ -7,13 +7,14 @@ void llamaIsolateEntry(Map<String, dynamic> args) async {
   final mainSendPort = args['port'] as SendPort;
   final modelPath =
       args['path'] as String; // Use the path passed from the main isolate
+  final mmprojPath = args['mmprojPath'] as String?; // Optional mmproj path
 
   final isolateReceivePort = ReceivePort();
   mainSendPort.send(isolateReceivePort.sendPort);
 
   // Initialize the service and load the model ONCE.
   final llamaService = LlamaService();
-  final success = llamaService.loadModel(modelPath);
+  final success = llamaService.loadModel(modelPath, mmprojPath: mmprojPath);
 
   if (!success) {
     print("Llama Isolate: FAILED to load model at '$modelPath'.");
@@ -29,7 +30,13 @@ void llamaIsolateEntry(Map<String, dynamic> args) async {
     if (message is LlamaRequest) {
       final prompt = message.prompt;
       final params = message.params;
+      final imagePaths = message.imagePaths;
       print("Llama Isolate: Received prompt: '$prompt'");
+      if (imagePaths != null && imagePaths.isNotEmpty) {
+        print(
+          "Llama Isolate: Received ${imagePaths.length} image(s): $imagePaths",
+        );
+      }
 
       // Stream tokens back to the UI as they're generated with custom parameters
       await llamaService.runPromptStreaming(
@@ -46,6 +53,7 @@ void llamaIsolateEntry(Map<String, dynamic> args) async {
         penaltyFreq: params.penaltyFreq,
         penaltyPresent: params.penaltyPresent,
         maxTokens: params.maxTokens,
+        imagePaths: imagePaths,
       );
 
       // Send final completion signal

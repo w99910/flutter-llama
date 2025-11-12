@@ -1,7 +1,23 @@
 {
     "gemma": {
-        "name": "Gemma",
+        "name": "Gemma 2",
         "bos_token": "",
+        "eos_token": "",
+        "system_prefix": "<start_of_turn>user\n",
+        "system_suffix": "<end_of_turn>\n",
+        "user_prefix": "<start_of_turn>user\n",
+        "user_suffix": "<end_of_turn>\n",
+        "assistant_prefix": "<start_of_turn>model\n",
+        "assistant_suffix": "<end_of_turn>\n",
+        "stop_sequences": [
+            "<end_of_turn>",
+            "</start_of_turn>"
+        ],
+        "add_generation_prompt": true
+    },
+    "gemma3": {
+        "name": "Gemma 3",
+        "bos_token": "<bos>",
         "eos_token": "",
         "system_prefix": "<start_of_turn>user\n",
         "system_suffix": "<end_of_turn>\n",
@@ -179,6 +195,22 @@
         "assistant_suffix": "<|end_of_turn|>",
         "stop_sequences": [
             "<|end_of_turn|>"
+        ],
+        "add_generation_prompt": true
+    },
+    "smolvlm": {
+        "name": "SmolVLM",
+        "bos_token": "",
+        "eos_token": "<end_of_utterance>",
+        "system_prefix": "",
+        "system_suffix": "",
+        "user_prefix": "<|im_start|>User: ",
+        "user_suffix": "<end_of_utterance>\n",
+        "assistant_prefix": "Assistant:",
+        "assistant_suffix": "<end_of_utterance>\n",
+        "stop_sequences": [
+            "<end_of_utterance>",
+            "<|im_start|>"
         ],
         "add_generation_prompt": true
     }

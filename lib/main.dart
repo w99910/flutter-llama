@@ -9,6 +9,7 @@ import 'package:flutter_application_1/internal/llama_request.dart';
 import 'package:flutter_application_1/lcontroller.dart';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:image_picker/image_picker.dart';
 
 // STEP 1: DEFINE A DATA CLASS TO PASS ARGUMENTS (BEST PRACTICE)
 
@@ -45,8 +46,14 @@ class ChatMessage {
   final String text;
   final bool isUser;
   final String? thinking; // Optional thinking process for Qwen models
+  final String? imagePath; // Optional image path
 
-  ChatMessage({required this.text, required this.isUser, this.thinking});
+  ChatMessage({
+    required this.text,
+    required this.isUser,
+    this.thinking,
+    this.imagePath,
+  });
 }
 
 class ChatScreen extends StatefulWidget {
@@ -67,6 +74,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  final ImagePicker _imagePicker = ImagePicker();
+
+  // Store images to send with next message
+  final List<String> _pendingImagePaths = [];
 
   // Generation parameters - can be adjusted by the user
   double _temperature = 0.8;
@@ -75,11 +86,28 @@ class _ChatScreenState extends State<ChatScreen> {
   double _minP = 0.05;
 
   // Current model configuration
+  // === TEXT-ONLY MODELS (no mmproj needed) ===
   // String _currentRepoId = "unsloth/gemma-3-270m-it-GGUF";
   // String _currentFileName = "gemma-3-270m-it-Q8_0.gguf";
+  // String? _currentMmprojFileName; // null for text-only models
 
-  String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
-  String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
+  // === VISION MODELS (require mmproj file) ===
+  // See VISION_MODELS.md for more vision model options
+
+  // Current: Qwen3 (text-only) - fast and efficient
+  // String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
+  // String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
+
+  String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
+  String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
+
+  // SmolVLM (500M) - Recommended starter vision model
+  // String _currentRepoId = "HuggingFaceTB/SmolVLM-Instruct-GGUF";
+  // String _currentFileName = "smolvlm-instruct-q4_k_m.gguf";
+
+  // LLaVA 1.5 (7B) - Popular vision model
+  // String _currentRepoId = "mys/ggml_llava-v1.5-7b";
+  // String _currentFileName = "llava-v1.5-7b-Q4_K_M.gguf";
 
   // Chat template
   ChatTemplate? _currentTemplate;
@@ -112,18 +140,75 @@ class _ChatScreenState extends State<ChatScreen> {
     final dir = await getApplicationDocumentsDirectory();
     final savePath = '${dir.path}/$_currentFileName';
     final file = File(savePath);
-    if (!file.existsSync()) {
-      print("Downloading..");
-      await downloadGGUF(
-        repoId: _currentRepoId,
-        filename: _currentFileName,
-        path: savePath,
+
+    String? mmprojPath;
+    bool needsDownload = !file.existsSync();
+
+    // Check if mmproj needs to be downloaded even if model exists
+    bool needsMmprojDownload = false;
+    if (!needsDownload) {
+      final existingMmproj = _findExistingMmprojFile(
+        dir.path,
+        _currentFileName,
       );
-      print("Downloaded at $savePath");
-    } else {
-      print("Model file exists at path: $savePath");
-      print("Model file size: ${await file.length()} bytes");
+      if (existingMmproj == null) {
+        // Model exists but mmproj might be needed - check repository
+        final files = await listRepoFiles(repoId: _currentRepoId);
+        final mmprojFilename = findMmprojFile(files, _currentFileName);
+        if (mmprojFilename != null) {
+          needsMmprojDownload = true;
+        }
+      } else {
+        mmprojPath = existingMmproj;
+      }
     }
+
+    // Show download dialog if needed
+    if (needsDownload || needsMmprojDownload) {
+      if (mounted) {
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => _DownloadDialog(
+            repoId: _currentRepoId,
+            filename: _currentFileName,
+            savePath: savePath,
+            onComplete: (modelPath, mmproj) {
+              mmprojPath = mmproj;
+            },
+            needsModel: needsDownload,
+            needsMmproj: needsMmprojDownload || needsDownload,
+          ),
+        );
+      }
+    } else {
+      print("✓ Model file exists at: $savePath");
+      print("✓ Model file size: ${await file.length()} bytes");
+      if (mmprojPath != null) {
+        print("✓ Multimodal projector found: $mmprojPath");
+      }
+    }
+
+    // If model was already downloaded, check for existing mmproj
+    if (!needsDownload && mmprojPath == null) {
+      mmprojPath = _findExistingMmprojFile(dir.path, _currentFileName);
+    }
+
+    // Debug logging
+    print("═══════════════════════════════════════");
+    print("Model initialization:");
+    print("  Model path: $savePath");
+    print("  Model exists: ${file.existsSync()}");
+    print("  Mmproj path: ${mmprojPath ?? 'null'}");
+    if (mmprojPath != null) {
+      final mmprojFile = File(mmprojPath!);
+      print("  Mmproj exists: ${mmprojFile.existsSync()}");
+      if (mmprojFile.existsSync()) {
+        print("  Mmproj size: ${mmprojFile.lengthSync()} bytes");
+      }
+    }
+    print("═══════════════════════════════════════");
+
     // Show an initial message to the user.
     setState(() {
       _messages.add(
@@ -135,7 +220,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     });
 
-    await _controller.initialize(modelPath: savePath);
+    await _controller.initialize(modelPath: savePath, mmprojPath: mmprojPath);
 
     // Update the UI once the model is loaded and ready.
     setState(() {
@@ -150,27 +235,76 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Find existing mmproj file in the same directory as the model
+  String? _findExistingMmprojFile(String dirPath, String modelFileName) {
+    final dir = Directory(dirPath);
+    if (!dir.existsSync()) return null;
+
+    // Extract base model name
+    String baseName = modelFileName
+        .replaceAll(RegExp(r'-Q\d+_[KML_]+.*\.gguf', caseSensitive: false), '')
+        .replaceAll(RegExp(r'-IQ\d+_[XS]+.*\.gguf', caseSensitive: false), '')
+        .replaceAll('.gguf', '');
+
+    // Search for mmproj files
+    final files = dir.listSync();
+    for (var file in files) {
+      if (file is File) {
+        final filename = file.path.split('/').last.toLowerCase();
+        if (filename.contains('mmproj') &&
+            filename.endsWith('.gguf') &&
+            filename.contains(baseName.toLowerCase())) {
+          return file.path;
+        }
+      }
+    }
+
+    return null;
+  }
+
   /// Formats the prompt using the current chat template
-  String _formatPrompt(String userMessage) {
+  String _formatPrompt(String userMessage, {bool hasImage = false}) {
     if (_currentTemplate == null) {
       // Fallback to simple format if no template available
       return userMessage;
     }
-    return _currentTemplate!.formatUserMessage(userMessage);
+    return _currentTemplate!.formatUserMessage(userMessage, hasImage: hasImage);
   }
 
   /// Handles sending the prompt to the Llama model.
   void _handleSendPrompt() async {
     final prompt = _textController.text.trim();
-    if (prompt.isEmpty) return;
+    if (prompt.isEmpty && _pendingImagePaths.isEmpty) return;
 
-    // Immediately clear the input field and update the UI.
+    // Copy pending images
+    final imagesToSend = List<String>.from(_pendingImagePaths);
+
+    // Immediately clear the input field and pending images
     _textController.clear();
     FocusScope.of(context).unfocus(); // Dismiss the keyboard
 
     setState(() {
-      // Add the user's message to the chat.
-      _messages.add(ChatMessage(text: prompt, isUser: true));
+      // Add the user's message to the chat with images if any
+      _messages.add(
+        ChatMessage(
+          text: prompt.isEmpty
+              ? "Sent ${imagesToSend.length} image(s)"
+              : prompt,
+          isUser: true,
+          imagePath: imagesToSend.isNotEmpty ? imagesToSend.first : null,
+        ),
+      );
+
+      // Add placeholder images if there are more than one
+      for (int i = 1; i < imagesToSend.length; i++) {
+        _messages.add(
+          ChatMessage(text: "", isUser: true, imagePath: imagesToSend[i]),
+        );
+      }
+
+      // Clear pending images
+      _pendingImagePaths.clear();
+
       // Add an empty message for the assistant that will be updated as tokens stream in.
       _messages.add(ChatMessage(text: "", isUser: false));
       _isAssistantTyping = true;
@@ -186,14 +320,18 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     // Format the prompt using the appropriate chat template
-    final formattedPrompt = _formatPrompt(prompt);
+    String formattedPrompt = _formatPrompt(
+      prompt.isEmpty ? "Describe this image" : prompt,
+      hasImage: imagesToSend.isNotEmpty,
+    );
 
-    // Stream tokens from the model with custom parameters
+    // Stream tokens from the model with custom parameters and images
     final responseBuffer = StringBuffer();
     int tokenCount = 0;
     await for (final tokenPiece in _controller.runPromptStreaming(
       formattedPrompt,
       params: params,
+      imagePaths: imagesToSend.isNotEmpty ? imagesToSend : null,
     )) {
       tokenCount++;
       print("Received token #$tokenCount: '$tokenPiece'");
@@ -281,6 +419,72 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     });
+  }
+
+  /// Handles picking an image from gallery or camera
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 1920,
+        maxHeight: 1920,
+        imageQuality: 85,
+      );
+
+      if (image != null) {
+        setState(() {
+          _pendingImagePaths.add(image.path);
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Image added! ${_pendingImagePaths.length} image(s) ready to send.',
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error picking image: $e')));
+      }
+    }
+  }
+
+  /// Shows dialog to choose image source
+  void _showImageSourceDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Choose Image Source'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Gallery'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Camera'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showChangeModelDialog() async {
@@ -584,6 +788,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     text: message.text,
                     isUser: message.isUser,
                     thinking: message.thinking,
+                    imagePath: message.imagePath,
                     // Show typing indicator on the last assistant message while typing
                     isTyping:
                         index == _messages.length - 1 &&
@@ -599,6 +804,54 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.all(8.0),
               child: Row(
                 children: [
+                  // Image picker button with badge
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.image),
+                        onPressed: canSendMessage
+                            ? _showImageSourceDialog
+                            : null,
+                        style: IconButton.styleFrom(
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.secondaryContainer,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onSecondaryContainer,
+                          padding: const EdgeInsets.all(12),
+                        ),
+                        tooltip: 'Add Image',
+                      ),
+                      if (_pendingImagePaths.isNotEmpty)
+                        Positioned(
+                          right: -4,
+                          top: -4,
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primary,
+                              shape: BoxShape.circle,
+                            ),
+                            constraints: const BoxConstraints(
+                              minWidth: 20,
+                              minHeight: 20,
+                            ),
+                            child: Text(
+                              '${_pendingImagePaths.length}',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.onPrimary,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: TextField(
                       controller: _textController,
@@ -647,12 +900,14 @@ class ChatBubble extends StatefulWidget {
     required this.text,
     required this.isUser,
     this.thinking,
+    this.imagePath,
     this.isTyping = false,
   });
 
   final String text;
   final bool isUser;
   final String? thinking;
+  final String? imagePath;
   final bool isTyping;
 
   @override
@@ -725,6 +980,43 @@ class _ChatBubbleState extends State<ChatBubble> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Image display
+                  if (widget.imagePath != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.file(
+                          File(widget.imagePath!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              padding: const EdgeInsets.all(8),
+                              color: Colors.red.withOpacity(0.1),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.error,
+                                    size: 16,
+                                    color: Colors.red,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Failed to load image',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.red,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+
                   // Thinking section (expandable)
                   if (widget.thinking != null && widget.thinking!.isNotEmpty)
                     Container(
@@ -858,6 +1150,169 @@ class _ChatBubbleState extends State<ChatBubble> {
                     ),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+/// Dialog that shows download progress with detailed status
+class _DownloadDialog extends StatefulWidget {
+  final String repoId;
+  final String filename;
+  final String savePath;
+  final Function(String modelPath, String? mmprojPath) onComplete;
+  final bool needsModel;
+  final bool needsMmproj;
+
+  const _DownloadDialog({
+    required this.repoId,
+    required this.filename,
+    required this.savePath,
+    required this.onComplete,
+    this.needsModel = true,
+    this.needsMmproj = true,
+  });
+
+  @override
+  State<_DownloadDialog> createState() => _DownloadDialogState();
+}
+
+class _DownloadDialogState extends State<_DownloadDialog> {
+  String _status = 'Preparing download...';
+  double _progress = 0.0;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _startDownload();
+  }
+
+  Future<void> _startDownload() async {
+    try {
+      final result = await downloadModelWithMmproj(
+        repoId: widget.repoId,
+        filename: widget.filename,
+        savePath: widget.savePath,
+        autoDownloadMmproj: widget.needsMmproj,
+        onProgress: (status, progress) {
+          if (mounted) {
+            setState(() {
+              _status = status;
+              _progress = progress;
+            });
+          }
+        },
+      );
+
+      // Call completion callback
+      widget.onComplete(result['modelPath']!, result['mmprojPath']);
+
+      // Close dialog
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _status = 'Download failed';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.download, size: 24),
+          SizedBox(width: 12),
+          Text('Downloading Model'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.filename,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 20),
+          if (_error == null) ...[
+            LinearProgressIndicator(
+              value: _progress,
+              minHeight: 8,
+              backgroundColor: Colors.grey[300],
+            ),
+            const SizedBox(height: 12),
+            Text(_status, style: Theme.of(context).textTheme.bodyMedium),
+            const SizedBox(height: 8),
+            Text(
+              '${(_progress * 100).toStringAsFixed(1)}% complete',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+            ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red[300]!),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red[700]),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Download Failed',
+                          style: TextStyle(
+                            color: Colors.red[900],
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _error!,
+                          style: TextStyle(
+                            color: Colors.red[800],
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                icon: const Icon(Icons.close),
+                label: const Text('Close'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

@@ -7,40 +7,68 @@ import 'package:flutter_application_1/internal/llama_cpp_ffi.dart';
 
 class LlamaService {
   late final llama_cpp _bindings;
+  late final llama_cpp _mtmdBindings; // Separate bindings for mtmd library
   ffi.Pointer<llama_model> _model = ffi.nullptr;
   ffi.Pointer<llama_context> _context = ffi.nullptr;
+  ffi.Pointer<mtmd_context> _mtmdContext = ffi.nullptr;
+
+  bool get supportsVision => _mtmdContext != ffi.nullptr;
 
   LlamaService() {
-    // Load the library based on the platform
-    final dylib = _loadNativeLibrary();
-    _bindings = llama_cpp(dylib);
+    // Load the main llama library
+    final llamaLib = _loadNativeLibrary('libllama.so');
+    _bindings = llama_cpp(llamaLib);
+
+    // Try to load mtmd library separately
+    try {
+      final mtmdLib = _loadNativeLibrary('libmtmd.so');
+      _mtmdBindings = llama_cpp(mtmdLib);
+      print("✅ Multimodal library (libmtmd.so) loaded successfully");
+    } catch (e) {
+      print("⚠️  Multimodal library not available: $e");
+      print("   Vision/audio features will be disabled.");
+      // Use main library as fallback
+      _mtmdBindings = _bindings;
+    }
+
     _bindings.llama_backend_init(); // Initialize the backend
   }
 
   /// Load the native library based on the platform
-  ffi.DynamicLibrary _loadNativeLibrary() {
+  ffi.DynamicLibrary _loadNativeLibrary(String libraryName) {
     if (Platform.isAndroid) {
       // On Android, libraries in jniLibs are automatically extracted
       // and can be loaded by name
-      return ffi.DynamicLibrary.open('libllama.so');
+      return ffi.DynamicLibrary.open(libraryName);
     } else if (Platform.isIOS) {
       // On iOS, use DynamicLibrary.process() for frameworks
       return ffi.DynamicLibrary.process();
     } else if (Platform.isLinux) {
       // On Linux, specify the full path or use system library path
-      return ffi.DynamicLibrary.open('libllama.so');
+      return ffi.DynamicLibrary.open(libraryName);
     } else if (Platform.isWindows) {
-      return ffi.DynamicLibrary.open('llama.dll');
+      final winName = libraryName
+          .replaceAll('.so', '.dll')
+          .replaceAll('lib', '');
+      return ffi.DynamicLibrary.open(winName);
     } else if (Platform.isMacOS) {
-      return ffi.DynamicLibrary.open('libllama.dylib');
+      final macName = libraryName.replaceAll('.so', '.dylib');
+      return ffi.DynamicLibrary.open(macName);
     } else {
       throw UnsupportedError('Platform not supported');
     }
   }
 
   /// Loads a GGUF model from the given file path.
+  /// [mmprojPath] - Optional path to multimodal projector for vision models
   /// Returns true on success, false on failure.
-  bool loadModel(String modelPath) {
+  bool loadModel(String modelPath, {String? mmprojPath}) {
+    print("═══════════════════════════════════════");
+    print("LlamaService.loadModel called:");
+    print("  modelPath: $modelPath");
+    print("  mmprojPath: ${mmprojPath ?? 'null'}");
+    print("═══════════════════════════════════════");
+
     if (_model != ffi.nullptr) {
       print("Model already loaded. Please free it first.");
       return false;
@@ -80,12 +108,58 @@ class LlamaService {
       return false;
     }
 
+    // Load vision projector if provided
+    if (mmprojPath != null) {
+      print("Loading multimodal projector from: $mmprojPath");
+
+      final mmprojPathPtr = mmprojPath.toNativeUtf8();
+
+      // Get default mtmd parameters using the mtmd library
+      final mtmdParams = _mtmdBindings.mtmd_context_params_default();
+      mtmdParams.use_gpu = false; // Match the model's GPU setting
+      mtmdParams.print_timings = true;
+      mtmdParams.n_threads = 4; // Adjust as needed
+
+      // Set the media marker to match the chat template
+      // SmolVLM and other vision models use <image> token
+      final markerPtr = '<image>'.toNativeUtf8();
+      mtmdParams.media_marker = markerPtr.cast();
+
+      // Initialize multimodal context using the mtmd library
+      _mtmdContext = _mtmdBindings.mtmd_init_from_file(
+        mmprojPathPtr.cast(),
+        _model,
+        mtmdParams,
+      );
+
+      malloc.free(mmprojPathPtr);
+      malloc.free(markerPtr);
+
+      if (_mtmdContext == ffi.nullptr) {
+        print(
+          "Failed to load multimodal projector. Continuing without vision support.",
+        );
+      } else {
+        final hasVision = _mtmdBindings.mtmd_support_vision(_mtmdContext);
+        final hasAudio = _mtmdBindings.mtmd_support_audio(_mtmdContext);
+        print("Multimodal projector loaded successfully!");
+        print("  - Vision support: $hasVision");
+        print("  - Audio support: $hasAudio");
+        print("  - Using marker: <image>");
+        print("  - Audio support: $hasAudio");
+      }
+    }
+
     print("Model and context loaded successfully.");
     return true;
   }
 
   /// Frees the loaded model and context to prevent memory leaks.
   void freeModel() {
+    if (_mtmdContext != ffi.nullptr) {
+      _mtmdBindings.mtmd_free(_mtmdContext);
+      _mtmdContext = ffi.nullptr;
+    }
     if (_context != ffi.nullptr) {
       _bindings.llama_free(_context);
       _context = ffi.nullptr;
@@ -287,6 +361,7 @@ class LlamaService {
 
   /// Runs a prompt and streams tokens as they're generated.
   /// The [onToken] callback is called for each token piece.
+  /// [imagePaths] - Optional list of image file paths for vision models
   Future<String> runPromptStreaming(
     String prompt,
     void Function(String tokenPiece) onToken, {
@@ -299,11 +374,74 @@ class LlamaService {
     double penaltyFreq = 0.2,
     double penaltyPresent = 0.1,
     int maxTokens = 2048 * 4,
+    List<String>? imagePaths,
   }) async {
     if (_context == ffi.nullptr) {
       throw Exception("Model not loaded. Call loadModel() first.");
     }
 
+    // Check if images are provided but multimodal is not supported
+    if (imagePaths != null && imagePaths.isNotEmpty) {
+      if (_mtmdContext == ffi.nullptr) {
+        throw Exception(
+          "Images provided but multimodal projector not loaded. "
+          "Call loadModel() with mmprojPath parameter.",
+        );
+      }
+
+      if (!_mtmdBindings.mtmd_support_vision(_mtmdContext)) {
+        throw Exception(
+          "Loaded multimodal projector does not support vision input.",
+        );
+      }
+
+      print("Processing prompt with ${imagePaths.length} image(s)");
+      return _runPromptStreamingWithImages(
+        prompt,
+        imagePaths,
+        onToken,
+        temperature: temperature,
+        topK: topK,
+        topP: topP,
+        minP: minP,
+        penaltyLastN: penaltyLastN,
+        penaltyRepeat: penaltyRepeat,
+        penaltyFreq: penaltyFreq,
+        penaltyPresent: penaltyPresent,
+        maxTokens: maxTokens,
+      );
+    }
+
+    // Text-only processing (original implementation)
+    return _runPromptStreamingTextOnly(
+      prompt,
+      onToken,
+      temperature: temperature,
+      topK: topK,
+      topP: topP,
+      minP: minP,
+      penaltyLastN: penaltyLastN,
+      penaltyRepeat: penaltyRepeat,
+      penaltyFreq: penaltyFreq,
+      penaltyPresent: penaltyPresent,
+      maxTokens: maxTokens,
+    );
+  }
+
+  /// Internal method: Text-only streaming (original implementation)
+  Future<String> _runPromptStreamingTextOnly(
+    String prompt,
+    void Function(String tokenPiece) onToken, {
+    double temperature = 0.8,
+    int topK = 40,
+    double topP = 0.95,
+    double minP = 0.05,
+    int penaltyLastN = 64,
+    double penaltyRepeat = 1.3,
+    double penaltyFreq = 0.2,
+    double penaltyPresent = 0.1,
+    int maxTokens = 2048 * 4,
+  }) async {
     // CRITICAL: Clear the KV cache before each prompt to avoid contamination
     final memory = _bindings.llama_get_memory(_context);
     _bindings.llama_memory_clear(memory, true);
@@ -469,5 +607,304 @@ class LlamaService {
 
     // Return the fully decoded string
     return utf8.decode(byteBuffer, allowMalformed: true);
+  }
+
+  /// Internal method: Streaming with image support
+  Future<String> _runPromptStreamingWithImages(
+    String prompt,
+    List<String> imagePaths,
+    void Function(String tokenPiece) onToken, {
+    double temperature = 0.8,
+    int topK = 40,
+    double topP = 0.95,
+    double minP = 0.05,
+    int penaltyLastN = 64,
+    double penaltyRepeat = 1.3,
+    double penaltyFreq = 0.2,
+    double penaltyPresent = 0.1,
+    int maxTokens = 2048 * 4,
+  }) async {
+    // CRITICAL: Clear the KV cache before each prompt
+    final memory = _bindings.llama_get_memory(_context);
+    _bindings.llama_memory_clear(memory, true);
+
+    // Load images as bitmaps
+    final bitmaps = <ffi.Pointer<mtmd_bitmap>>[];
+    final bitmapPtrs = <ffi.Pointer<ffi.Pointer<mtmd_bitmap>>>[];
+
+    try {
+      for (final imagePath in imagePaths) {
+        final imagePathPtr = imagePath.toNativeUtf8();
+        final bitmap = _mtmdBindings.mtmd_helper_bitmap_init_from_file(
+          _mtmdContext,
+          imagePathPtr.cast(),
+        );
+        malloc.free(imagePathPtr);
+
+        if (bitmap == ffi.nullptr) {
+          throw Exception("Failed to load image: $imagePath");
+        }
+
+        bitmaps.add(bitmap);
+        print(
+          "Loaded image: $imagePath (${_mtmdBindings.mtmd_bitmap_get_nx(bitmap)}x${_mtmdBindings.mtmd_bitmap_get_ny(bitmap)})",
+        );
+      }
+
+      // Create array of bitmap pointers
+      final bitmapArrayPtr = malloc<ffi.Pointer<mtmd_bitmap>>(bitmaps.length);
+      for (int i = 0; i < bitmaps.length; i++) {
+        bitmapArrayPtr[i] = bitmaps[i];
+      }
+      bitmapPtrs.add(bitmapArrayPtr);
+
+      // Prepare input text structure
+      final inputTextPtr = malloc<mtmd_input_text>();
+      final promptPtr = prompt.toNativeUtf8();
+      inputTextPtr.ref.text = promptPtr.cast();
+      inputTextPtr.ref.add_special = false;
+      inputTextPtr.ref.parse_special = true;
+
+      // Tokenize with images
+      final chunksPtr = _mtmdBindings.mtmd_input_chunks_init();
+      final tokenizeResult = _mtmdBindings.mtmd_tokenize(
+        _mtmdContext,
+        chunksPtr,
+        inputTextPtr,
+        bitmapArrayPtr,
+        bitmaps.length,
+      );
+
+      if (tokenizeResult != 0) {
+        throw Exception(
+          "Failed to tokenize with images. Error code: $tokenizeResult",
+        );
+      }
+
+      final nChunks = _mtmdBindings.mtmd_input_chunks_size(chunksPtr);
+      print("Tokenized into $nChunks chunks");
+
+      // Process each chunk
+      int nPast = 0;
+      final nCtx = _bindings.llama_n_ctx(_context);
+      final vocab = _bindings.llama_model_get_vocab(_model);
+
+      for (int chunkIdx = 0; chunkIdx < nChunks; chunkIdx++) {
+        final chunk = _mtmdBindings.mtmd_input_chunks_get(chunksPtr, chunkIdx);
+        final chunkType = _mtmdBindings.mtmd_input_chunk_get_type(chunk);
+        final nTokens = _mtmdBindings.mtmd_input_chunk_get_n_tokens(chunk);
+
+        print("Processing chunk $chunkIdx: type=$chunkType, tokens=$nTokens");
+
+        if (chunkType == mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT) {
+          // Text chunk - decode normally
+          final tokensOutPtr = malloc<ffi.Size>();
+          final tokensPtr = _mtmdBindings.mtmd_input_chunk_get_tokens_text(
+            chunk,
+            tokensOutPtr,
+          );
+          final numTokens = tokensOutPtr.value;
+          malloc.free(tokensOutPtr);
+
+          // Decode text tokens in batches
+          for (int batchStart = 0; batchStart < numTokens;) {
+            final batchSize = (numTokens - batchStart) < 512
+                ? (numTokens - batchStart)
+                : 512;
+            final batch = _bindings.llama_batch_init(batchSize, 0, 1);
+            batch.n_tokens = batchSize;
+
+            for (int i = 0; i < batchSize; i++) {
+              final tokenIdx = batchStart + i;
+              (batch.token + i).value = tokensPtr[tokenIdx];
+              (batch.pos + i).value = nPast + i;
+              (batch.n_seq_id + i).value = 1;
+              (batch.seq_id + i).value.value = 0;
+              (batch.logits + i).value = (tokenIdx == numTokens - 1) ? 1 : 0;
+            }
+
+            if (_bindings.llama_decode(_context, batch) != 0) {
+              _bindings.llama_batch_free(batch);
+              throw Exception("llama_decode failed on text chunk");
+            }
+
+            _bindings.llama_batch_free(batch);
+            nPast += batchSize;
+            batchStart += batchSize;
+          }
+        } else if (chunkType ==
+            mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+          // Image chunk - encode to embeddings then decode
+          final encodeResult = _mtmdBindings.mtmd_encode_chunk(
+            _mtmdContext,
+            chunk,
+          );
+          if (encodeResult != 0) {
+            throw Exception(
+              "Failed to encode image chunk. Error: $encodeResult",
+            );
+          }
+
+          final embdPtr = _mtmdBindings.mtmd_get_output_embd(_mtmdContext);
+          final nEmbd = _bindings.llama_model_n_embd(_model);
+
+          // Decode embeddings in batches
+          for (int batchStart = 0; batchStart < nTokens;) {
+            final batchSize = (nTokens - batchStart) < 512
+                ? (nTokens - batchStart)
+                : 512;
+            final batch = _bindings.llama_batch_init(batchSize, nEmbd, 1);
+            batch.n_tokens = batchSize;
+
+            for (int i = 0; i < batchSize; i++) {
+              final tokenIdx = batchStart + i;
+              (batch.embd + i * nEmbd)
+                  .asTypedList(nEmbd)
+                  .setAll(0, (embdPtr + tokenIdx * nEmbd).asTypedList(nEmbd));
+              (batch.pos + i).value = nPast + i;
+              (batch.n_seq_id + i).value = 1;
+              (batch.seq_id + i).value.value = 0;
+              (batch.logits + i).value = 0;
+            }
+
+            if (_bindings.llama_decode(_context, batch) != 0) {
+              _bindings.llama_batch_free(batch);
+              throw Exception("llama_decode failed on image embeddings");
+            }
+
+            _bindings.llama_batch_free(batch);
+            nPast += batchSize;
+            batchStart += batchSize;
+          }
+        }
+      }
+
+      print("All chunks processed. Starting generation from position $nPast");
+
+      // Setup the samplers
+      final sparams = _bindings.llama_sampler_chain_default_params();
+      final smpl = _bindings.llama_sampler_chain_init(sparams);
+
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_penalties(
+          penaltyLastN,
+          penaltyRepeat,
+          penaltyFreq,
+          penaltyPresent,
+        ),
+      );
+
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_top_k(topK),
+      );
+
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_top_p(topP, 1),
+      );
+
+      if (minP > 0.0) {
+        _bindings.llama_sampler_chain_add(
+          smpl,
+          _bindings.llama_sampler_init_min_p(minP, 1),
+        );
+      }
+
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_temp(temperature),
+      );
+
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_dist(0),
+      );
+
+      final eosToken = _bindings.llama_token_eos(vocab);
+      final byteBuffer = <int>[];
+      final streamBuffer = <int>[];
+
+      String decodeAndFlush(List<int> bytes, {bool final_ = false}) {
+        streamBuffer.addAll(bytes);
+        String result = '';
+        int validEnd = streamBuffer.length;
+
+        while (validEnd > 0) {
+          try {
+            result = utf8.decode(streamBuffer.sublist(0, validEnd));
+            if (validEnd < streamBuffer.length && !final_) {
+              streamBuffer.removeRange(0, validEnd);
+            } else {
+              streamBuffer.clear();
+            }
+            break;
+          } catch (e) {
+            validEnd--;
+          }
+        }
+
+        return result;
+      }
+
+      // Generation loop
+      final maxGenTokens = nPast + maxTokens;
+      final loopLimit = maxGenTokens < nCtx ? maxGenTokens : nCtx;
+
+      for (int i = nPast; i < loopLimit; i++) {
+        final int token = _bindings.llama_sampler_sample(smpl, _context, -1);
+        _bindings.llama_sampler_accept(smpl, token);
+
+        if (token == eosToken) {
+          break;
+        }
+
+        final tokenBytes = _tokenToBytes(token);
+        byteBuffer.addAll(tokenBytes);
+
+        final decoded = decodeAndFlush(tokenBytes);
+        if (decoded.isNotEmpty) {
+          onToken(decoded);
+        }
+
+        final nextBatch = _bindings.llama_batch_init(1, 0, 1);
+        nextBatch.n_tokens = 1;
+        (nextBatch.token).value = token;
+        (nextBatch.pos).value = i;
+        (nextBatch.n_seq_id).value = 1;
+        (nextBatch.seq_id).value.value = 0;
+        (nextBatch.logits).value = 1;
+
+        if (_bindings.llama_decode(_context, nextBatch) != 0) {
+          print("llama_decode failed during generation");
+          _bindings.llama_batch_free(nextBatch);
+          break;
+        }
+        _bindings.llama_batch_free(nextBatch);
+      }
+
+      if (streamBuffer.isNotEmpty) {
+        final remaining = decodeAndFlush([], final_: true);
+        if (remaining.isNotEmpty) {
+          onToken(remaining);
+        }
+      }
+
+      _bindings.llama_sampler_free(smpl);
+      _mtmdBindings.mtmd_input_chunks_free(chunksPtr);
+      malloc.free(promptPtr);
+      malloc.free(inputTextPtr);
+
+      return utf8.decode(byteBuffer, allowMalformed: true);
+    } finally {
+      // Cleanup bitmaps
+      for (final bitmap in bitmaps) {
+        _mtmdBindings.mtmd_bitmap_free(bitmap);
+      }
+      for (final ptr in bitmapPtrs) {
+        malloc.free(ptr);
+      }
+    }
   }
 }

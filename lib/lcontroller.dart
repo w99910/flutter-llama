@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 class LlamaController {
   SendPort? _llamaSendPort;
 
-  Future<void> initialize({String? modelPath}) async {
+  Future<void> initialize({String? modelPath, String? mmprojPath}) async {
     final mainReceivePort = ReceivePort();
 
     // Use provided path or default
@@ -15,10 +15,11 @@ class LlamaController {
     final String finalModelPath =
         modelPath ?? '${appDocsDir.path}/gemma-3-270m-it-Q8_0.gguf';
 
-    // Pass the path to the isolate during spawn.
+    // Pass the paths to the isolate during spawn.
     await Isolate.spawn(llamaIsolateEntry, {
       'port': mainReceivePort.sendPort,
       'path': finalModelPath,
+      'mmprojPath': mmprojPath, // Optional mmproj path for vision models
     });
 
     // Wait for the isolate to send back its own SendPort
@@ -54,6 +55,7 @@ class LlamaController {
   Stream<String> runPromptStreaming(
     String prompt, {
     GenerationParams? params,
+    List<String>? imagePaths,
   }) async* {
     if (_llamaSendPort == null) {
       yield "Error: Llama isolate is not initialized or failed to load model.";
@@ -66,6 +68,7 @@ class LlamaController {
         responsePort.sendPort,
         prompt,
         params: params ?? const GenerationParams(),
+        imagePaths: imagePaths,
       ),
     );
 
