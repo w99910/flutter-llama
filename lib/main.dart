@@ -97,18 +97,23 @@ class _ChatScreenState extends State<ChatScreen> {
   // Current: Qwen3 (text-only) - fast and efficient
   // String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
   // String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
+  // String? _currentMmprojFileName;
+
+  String _currentRepoId = "Qwen/Qwen3-VL-2B-Thinking-GGUF";
+  String _currentFileName = "Qwen3VL-2B-Thinking-Q4_K_M.gguf";
+  String? _currentMmprojFileName = "mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf";
 
   // String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
   // String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
-  // String _currentMmprojFileName = "mmproj-SmolVLM-Instruct-f16.gguf";
+  // String? _currentMmprojFileName = "mmproj-SmolVLM-Instruct-f16.gguf";
 
-  String _currentRepoId = "ggml-org/SmolVLM-500M-Instruct-GGUF";
-  String _currentFileName = "SmolVLM-500M-Instruct-Q8_0.gguf";
-  String _currentMmprojFileName = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
+  // String _currentRepoId = "ggml-org/SmolVLM-500M-Instruct-GGUF";
+  // String _currentFileName = "SmolVLM-500M-Instruct-Q8_0.gguf";
+  // String? _currentMmprojFileName = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 
   // String _currentRepoId = "ggml-org/gemma-3-4b-it-GGUF";
   // String _currentFileName = "gemma-3-4b-it-Q4_K_M.gguf";
-  // String _currentMmprojFileName = "mmproj-model-f16.gguf";
+  // String? _currentMmprojFileName = "mmproj-model-f16.gguf";
 
   // SmolVLM (500M) - Recommended starter vision model
   // String _currentRepoId = "HuggingFaceTB/SmolVLM-Instruct-GGUF";
@@ -157,7 +162,7 @@ class _ChatScreenState extends State<ChatScreen> {
     bool needsMmprojDownload = false;
 
     // If user specified an mmproj filename, check if it exists locally
-    if (_currentMmprojFileName.isNotEmpty) {
+    if (_currentMmprojFileName != null && _currentMmprojFileName!.isNotEmpty) {
       final mmprojFile = File('${dir.path}/$_currentMmprojFileName');
       if (mmprojFile.existsSync()) {
         mmprojPath = mmprojFile.path;
@@ -476,6 +481,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // Create controllers OUTSIDE the builder to avoid recreation on rebuild
     final repoController = TextEditingController(text: _currentRepoId);
     final fileController = TextEditingController(text: _currentFileName);
+    final mmprojController = TextEditingController(
+      text: _currentMmprojFileName ?? '',
+    );
 
     final result = await showDialog<Map<String, String>?>(
       context: context,
@@ -504,6 +512,17 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                TextField(
+                  controller: mmprojController,
+                  decoration: const InputDecoration(
+                    labelText: 'Mmproj Filename (Optional)',
+                    hintText: 'e.g., mmproj-SmolVLM-500M-Instruct-Q8_0.gguf',
+                    border: OutlineInputBorder(),
+                    helperText: 'Leave empty for text-only models',
+                    helperMaxLines: 2,
+                  ),
+                ),
+                const SizedBox(height: 16),
                 const Text(
                   'Note: The app will restart with the new model. Old model files will be kept.',
                   style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
@@ -522,10 +541,15 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () {
                 final newRepoId = repoController.text.trim();
                 final newFileName = fileController.text.trim();
+                final newMmprojFileName = mmprojController.text.trim();
 
                 if (newRepoId.isEmpty || newFileName.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please fill in both fields')),
+                    const SnackBar(
+                      content: Text(
+                        'Please fill in repository ID and model filename',
+                      ),
+                    ),
                   );
                   return;
                 }
@@ -534,6 +558,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Navigator.pop(context, {
                   'repoId': newRepoId,
                   'fileName': newFileName,
+                  'mmprojFileName': newMmprojFileName,
                 });
               },
               child: const Text('Load Model'),
@@ -556,6 +581,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _controller = LlamaController();
         _currentRepoId = result['repoId']!;
         _currentFileName = result['fileName']!;
+        _currentMmprojFileName = result['mmprojFileName']!.isEmpty
+            ? null
+            : result['mmprojFileName'];
         _isModelReady = false;
         _messages.clear();
       });
