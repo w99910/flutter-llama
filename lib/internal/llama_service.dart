@@ -1,7 +1,8 @@
 import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, File;
+import 'package:image/image.dart' as img;
 
 import 'package:flutter_application_1/internal/llama_cpp_ffi.dart';
 
@@ -76,8 +77,12 @@ class LlamaService {
 
     // 1. Get default model parameters
     final modelParams = _bindings.llama_model_default_params();
-    // Force CPU-only execution (no GPU offloading)
-    modelParams.n_gpu_layers = 0; // Set to 0 to disable GPU usage
+    // Enable GPU offloading for better performance
+    // For vision models, GPU is essential for processing images in reasonable time
+    modelParams.n_gpu_layers = 999; // Offload as many layers as possible to GPU
+    print(
+      "GPU offloading enabled: n_gpu_layers=999 (vision models require GPU for acceptable performance)",
+    );
 
     // Convert the Dart string path to a C-style string (Pointer<Char>)
     final pathPtr = modelPath.toNativeUtf8();
@@ -96,7 +101,23 @@ class LlamaService {
     // 3. Create a context from the loaded model
     final contextParams = _bindings.llama_context_default_params();
     // Customize context params if needed, e.g., context size
-    // contextParams.n_ctx = 2048;
+    // Set a larger context size for vision models to accommodate image embeddings
+    // Vision models typically need 2048-4096 tokens for images + prompt + response
+    contextParams.n_ctx = mmprojPath != null ? 4096 : 2048;
+
+    // CRITICAL: Set n_ubatch (micro-batch size) for vision models
+    // Image embeddings can be 576+ tokens, so we need a larger ubatch size
+    // This must be large enough to hold at least one image's worth of embeddings
+    if (mmprojPath != null) {
+      contextParams.n_ubatch = 2048; // Large enough for image embeddings
+    }
+
+    print("Setting context size to: ${contextParams.n_ctx}");
+    if (mmprojPath != null) {
+      print(
+        "Setting n_ubatch to: ${contextParams.n_ubatch} (for vision model)",
+      );
+    }
 
     _context = _bindings.llama_new_context_with_model(_model, contextParams);
 
@@ -116,9 +137,11 @@ class LlamaService {
 
       // Get default mtmd parameters using the mtmd library
       final mtmdParams = _mtmdBindings.mtmd_context_params_default();
-      mtmdParams.use_gpu = false; // Match the model's GPU setting
+      mtmdParams.use_gpu =
+          true; // Enable GPU for image processing (CRITICAL for performance)
       mtmdParams.print_timings = true;
       mtmdParams.n_threads = 4; // Adjust as needed
+      print("Multimodal projector GPU enabled for fast image processing");
 
       // Set the media marker to match the chat template
       // SmolVLM and other vision models use <image> token
@@ -241,6 +264,75 @@ class LlamaService {
 
     malloc.free(buffer);
     return bytes;
+  }
+
+  /// Helper to resize image to 480p (854x480) if it's larger
+  /// Returns the path to the resized image (or original if no resize needed)
+  Future<String> _resizeImageTo480pIfNeeded(String imagePath) async {
+    try {
+      // Read the image file
+      final imageFile = File(imagePath);
+      final imageBytes = await imageFile.readAsBytes();
+
+      // Decode the image
+      final image = img.decodeImage(imageBytes);
+      if (image == null) {
+        print("Warning: Could not decode image $imagePath, using original");
+        return imagePath;
+      }
+
+      final width = image.width;
+      final height = image.height;
+
+      // Check if resizing is needed (if either dimension exceeds 480p)
+      // 480p is typically 854x480 (16:9) but we'll use 480 as the max for the shorter side
+      const maxDimension = 480;
+
+      if (width <= maxDimension && height <= maxDimension) {
+        print(
+          "Image $imagePath is already <= 480p (${width}x${height}), no resize needed",
+        );
+        return imagePath;
+      }
+
+      // Calculate new dimensions maintaining aspect ratio
+      int newWidth, newHeight;
+      if (width > height) {
+        // Landscape: limit height to maxDimension
+        newHeight = maxDimension;
+        newWidth = (width * maxDimension / height).round();
+      } else {
+        // Portrait or square: limit width to maxDimension
+        newWidth = maxDimension;
+        newHeight = (height * maxDimension / width).round();
+      }
+
+      print(
+        "Resizing image from ${width}x${height} to ${newWidth}x${newHeight}",
+      );
+
+      // Resize the image
+      final resized = img.copyResize(
+        image,
+        width: newWidth,
+        height: newHeight,
+        interpolation: img.Interpolation.linear,
+      );
+
+      // Save to a temporary file
+      final tempDir = await File(imagePath).parent.path;
+      final tempPath =
+          '$tempDir/resized_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final resizedFile = File(tempPath);
+      await resizedFile.writeAsBytes(img.encodeJpg(resized, quality: 85));
+
+      print("Resized image saved to: $tempPath");
+      return tempPath;
+    } catch (e) {
+      print("Error resizing image $imagePath: $e");
+      print("Falling back to original image");
+      return imagePath;
+    }
   }
 
   Future<String> runPrompt(String prompt) async {
@@ -631,10 +723,17 @@ class LlamaService {
     // Load images as bitmaps
     final bitmaps = <ffi.Pointer<mtmd_bitmap>>[];
     final bitmapPtrs = <ffi.Pointer<ffi.Pointer<mtmd_bitmap>>>[];
+    final resizedImagePaths = <String>[]; // Track resized images for cleanup
 
     try {
       for (final imagePath in imagePaths) {
-        final imagePathPtr = imagePath.toNativeUtf8();
+        // Resize image to 480p if needed
+        final processedImagePath = await _resizeImageTo480pIfNeeded(imagePath);
+        if (processedImagePath != imagePath) {
+          resizedImagePaths.add(processedImagePath);
+        }
+
+        final imagePathPtr = processedImagePath.toNativeUtf8();
         final bitmap = _mtmdBindings.mtmd_helper_bitmap_init_from_file(
           _mtmdContext,
           imagePathPtr.cast(),
@@ -665,6 +764,20 @@ class LlamaService {
       inputTextPtr.ref.add_special = false;
       inputTextPtr.ref.parse_special = true;
 
+      // Debug: Count image markers in prompt
+      final imageMarkerCount = '<image>'.allMatches(prompt).length;
+      print(
+        "Prompt has $imageMarkerCount <image> marker(s), ${bitmaps.length} bitmap(s) loaded",
+      );
+      if (imageMarkerCount != bitmaps.length) {
+        print(
+          "WARNING: Mismatch detected! This will cause tokenization to fail.",
+        );
+        print(
+          "Prompt preview: ${prompt.substring(0, prompt.length < 200 ? prompt.length : 200)}...",
+        );
+      }
+
       // Tokenize with images
       final chunksPtr = _mtmdBindings.mtmd_input_chunks_init();
       final tokenizeResult = _mtmdBindings.mtmd_tokenize(
@@ -676,108 +789,61 @@ class LlamaService {
       );
 
       if (tokenizeResult != 0) {
-        throw Exception(
-          "Failed to tokenize with images. Error code: $tokenizeResult",
-        );
+        String errorMsg =
+            "Failed to tokenize with images. Error code: $tokenizeResult";
+        if (tokenizeResult == 1) {
+          errorMsg +=
+              "\n  Reason: Number of bitmaps (${bitmaps.length}) doesn't match number of <image> markers ($imageMarkerCount)";
+        } else if (tokenizeResult == 2) {
+          errorMsg += "\n  Reason: Image preprocessing error";
+        }
+        throw Exception(errorMsg);
       }
 
       final nChunks = _mtmdBindings.mtmd_input_chunks_size(chunksPtr);
       print("Tokenized into $nChunks chunks");
 
-      // Process each chunk
-      int nPast = 0;
+      // Use helper function to evaluate all chunks (text and images)
+      // This handles batching, encoding images, and proper attention patterns
+      final nPastPtr = malloc<llama_pos>();
+      nPastPtr.value = 0;
+
       final nCtx = _bindings.llama_n_ctx(_context);
-      final vocab = _bindings.llama_model_get_vocab(_model);
+      final nUbatch = _bindings.llama_n_ubatch(_context);
+      // For vision models, use a larger batch size to accommodate image embeddings
+      // The batch size should be at least as large as n_ubatch to process images efficiently
+      final nBatch = nUbatch; // Use n_ubatch as batch size for vision models
+      final vocab = _bindings.llama_model_get_vocab(
+        _model,
+      ); // Needed for EOS token later
 
-      for (int chunkIdx = 0; chunkIdx < nChunks; chunkIdx++) {
-        final chunk = _mtmdBindings.mtmd_input_chunks_get(chunksPtr, chunkIdx);
-        final chunkType = _mtmdBindings.mtmd_input_chunk_get_type(chunk);
-        final nTokens = _mtmdBindings.mtmd_input_chunk_get_n_tokens(chunk);
+      print(
+        "Context info: n_ctx=$nCtx, n_ubatch=$nUbatch, n_batch=$nBatch, n_chunks=$nChunks",
+      );
+      print("Evaluating chunks with mtmd_helper");
 
-        print("Processing chunk $chunkIdx: type=$chunkType, tokens=$nTokens");
+      final evalResult = _mtmdBindings.mtmd_helper_eval_chunks(
+        _mtmdContext,
+        _context,
+        chunksPtr,
+        0, // n_past starts at 0
+        0, // seq_id
+        nBatch,
+        true, // logits_last
+        nPastPtr,
+      );
 
-        if (chunkType == mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_TEXT) {
-          // Text chunk - decode normally
-          final tokensOutPtr = malloc<ffi.Size>();
-          final tokensPtr = _mtmdBindings.mtmd_input_chunk_get_tokens_text(
-            chunk,
-            tokensOutPtr,
-          );
-          final numTokens = tokensOutPtr.value;
-          malloc.free(tokensOutPtr);
-
-          // Decode text tokens in batches
-          for (int batchStart = 0; batchStart < numTokens;) {
-            final batchSize = (numTokens - batchStart) < 512
-                ? (numTokens - batchStart)
-                : 512;
-            final batch = _bindings.llama_batch_init(batchSize, 0, 1);
-            batch.n_tokens = batchSize;
-
-            for (int i = 0; i < batchSize; i++) {
-              final tokenIdx = batchStart + i;
-              (batch.token + i).value = tokensPtr[tokenIdx];
-              (batch.pos + i).value = nPast + i;
-              (batch.n_seq_id + i).value = 1;
-              (batch.seq_id + i).value.value = 0;
-              (batch.logits + i).value = (tokenIdx == numTokens - 1) ? 1 : 0;
-            }
-
-            if (_bindings.llama_decode(_context, batch) != 0) {
-              _bindings.llama_batch_free(batch);
-              throw Exception("llama_decode failed on text chunk");
-            }
-
-            _bindings.llama_batch_free(batch);
-            nPast += batchSize;
-            batchStart += batchSize;
-          }
-        } else if (chunkType ==
-            mtmd_input_chunk_type.MTMD_INPUT_CHUNK_TYPE_IMAGE) {
-          // Image chunk - encode to embeddings then decode
-          final encodeResult = _mtmdBindings.mtmd_encode_chunk(
-            _mtmdContext,
-            chunk,
-          );
-          if (encodeResult != 0) {
-            throw Exception(
-              "Failed to encode image chunk. Error: $encodeResult",
-            );
-          }
-
-          final embdPtr = _mtmdBindings.mtmd_get_output_embd(_mtmdContext);
-          final nEmbd = _bindings.llama_model_n_embd(_model);
-
-          // Decode embeddings in batches
-          for (int batchStart = 0; batchStart < nTokens;) {
-            final batchSize = (nTokens - batchStart) < 512
-                ? (nTokens - batchStart)
-                : 512;
-            final batch = _bindings.llama_batch_init(batchSize, nEmbd, 1);
-            batch.n_tokens = batchSize;
-
-            for (int i = 0; i < batchSize; i++) {
-              final tokenIdx = batchStart + i;
-              (batch.embd + i * nEmbd)
-                  .asTypedList(nEmbd)
-                  .setAll(0, (embdPtr + tokenIdx * nEmbd).asTypedList(nEmbd));
-              (batch.pos + i).value = nPast + i;
-              (batch.n_seq_id + i).value = 1;
-              (batch.seq_id + i).value.value = 0;
-              (batch.logits + i).value = 0;
-            }
-
-            if (_bindings.llama_decode(_context, batch) != 0) {
-              _bindings.llama_batch_free(batch);
-              throw Exception("llama_decode failed on image embeddings");
-            }
-
-            _bindings.llama_batch_free(batch);
-            nPast += batchSize;
-            batchStart += batchSize;
-          }
-        }
+      if (evalResult != 0) {
+        malloc.free(nPastPtr);
+        throw Exception(
+          "Failed to evaluate chunks. Error code: $evalResult. "
+          "Context: n_ctx=$nCtx, n_ubatch=$nUbatch, n_batch=$nBatch, n_chunks=$nChunks. "
+          "Vision models need sufficient n_ubatch to hold image embeddings (typically 2048+).",
+        );
       }
+
+      final nPast = nPastPtr.value;
+      malloc.free(nPastPtr);
 
       print("All chunks processed. Starting generation from position $nPast");
 
@@ -904,6 +970,19 @@ class LlamaService {
       }
       for (final ptr in bitmapPtrs) {
         malloc.free(ptr);
+      }
+
+      // Delete temporary resized images
+      for (final resizedPath in resizedImagePaths) {
+        try {
+          final file = File(resizedPath);
+          if (await file.exists()) {
+            await file.delete();
+            print("Cleaned up resized image: $resizedPath");
+          }
+        } catch (e) {
+          print("Error cleaning up resized image $resizedPath: $e");
+        }
       }
     }
   }

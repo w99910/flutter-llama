@@ -148,6 +148,15 @@ String? findMmprojFile(List<HFModelFile> files, String modelFilename) {
     }
   }
 
+  // Fallback 2: find any generic mmproj file (e.g., "mmproj-model-f16.gguf" for Gemma 3)
+  for (var file in files) {
+    final filename = file.path.toLowerCase();
+    if (filename.contains('mmproj') && filename.endsWith('.gguf')) {
+      print("Found generic mmproj file: ${file.path}");
+      return file.path;
+    }
+  }
+
   print("No mmproj file found for model: $modelFilename");
   return null;
 }
@@ -161,6 +170,7 @@ Future<Map<String, String?>> downloadModelWithMmproj({
   String? revision,
   String? subfolder,
   bool autoDownloadMmproj = true,
+  String? mmprojFilename, // User-specified mmproj filename
   void Function(String status, double progress)? onProgress,
 }) async {
   final Map<String, String?> result = {'modelPath': null, 'mmprojPath': null};
@@ -187,21 +197,33 @@ Future<Map<String, String?>> downloadModelWithMmproj({
   if (autoDownloadMmproj) {
     onProgress?.call('Searching for multimodal projector...', 0.7);
     print("Searching for mmproj file in repository...");
-    final files = await listRepoFiles(repoId: repoId, revision: revision);
-    final mmprojFilename = findMmprojFile(files, filename);
 
-    if (mmprojFilename != null) {
+    String? mmprojFilenameToDownload;
+
+    // Use user-specified mmproj filename if provided
+    if (mmprojFilename != null && mmprojFilename.isNotEmpty) {
+      print("Using user-specified mmproj filename: $mmprojFilename");
+      mmprojFilenameToDownload = mmprojFilename;
+    } else {
+      // Auto-detect mmproj file
+      final files = await listRepoFiles(repoId: repoId, revision: revision);
+      mmprojFilenameToDownload = findMmprojFile(files, filename);
+    }
+
+    if (mmprojFilenameToDownload != null) {
       // Construct mmproj save path
       final mmprojPath = savePath.replaceAll(
         filename,
-        mmprojFilename.split('/').last, // Get filename without subfolder
+        mmprojFilenameToDownload
+            .split('/')
+            .last, // Get filename without subfolder
       );
 
-      onProgress?.call('Downloading mmproj: $mmprojFilename', 0.7);
-      print("Downloading mmproj file: $mmprojFilename");
+      onProgress?.call('Downloading mmproj: $mmprojFilenameToDownload', 0.7);
+      print("Downloading mmproj file: $mmprojFilenameToDownload");
       await downloadGGUF(
         repoId: repoId,
-        filename: mmprojFilename,
+        filename: mmprojFilenameToDownload,
         path: mmprojPath,
         revision: revision,
         subfolder: subfolder,

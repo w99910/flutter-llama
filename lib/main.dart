@@ -100,6 +100,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
   String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
+  String _currentMmprojFileName = "mmproj-SmolVLM-Instruct-f16.gguf";
+
+  // String _currentRepoId = "ggml-org/gemma-3-4b-it-GGUF";
+  // String _currentFileName = "gemma-3-4b-it-Q4_K_M.gguf";
+  // String _currentMmprojFileName = "mmproj-model-f16.gguf";
 
   // SmolVLM (500M) - Recommended starter vision model
   // String _currentRepoId = "HuggingFaceTB/SmolVLM-Instruct-GGUF";
@@ -144,22 +149,19 @@ class _ChatScreenState extends State<ChatScreen> {
     String? mmprojPath;
     bool needsDownload = !file.existsSync();
 
-    // Check if mmproj needs to be downloaded even if model exists
+    // Check if mmproj needs to be downloaded
     bool needsMmprojDownload = false;
-    if (!needsDownload) {
-      final existingMmproj = _findExistingMmprojFile(
-        dir.path,
-        _currentFileName,
-      );
-      if (existingMmproj == null) {
-        // Model exists but mmproj might be needed - check repository
-        final files = await listRepoFiles(repoId: _currentRepoId);
-        final mmprojFilename = findMmprojFile(files, _currentFileName);
-        if (mmprojFilename != null) {
-          needsMmprojDownload = true;
-        }
-      } else {
-        mmprojPath = existingMmproj;
+
+    // If user specified an mmproj filename, check if it exists locally
+    if (_currentMmprojFileName.isNotEmpty) {
+      final mmprojFile = File('${dir.path}/$_currentMmprojFileName');
+      if (mmprojFile.existsSync()) {
+        mmprojPath = mmprojFile.path;
+        print("✓ Using user-specified mmproj: $_currentMmprojFileName");
+      } else if (!needsDownload) {
+        // Model exists but user-specified mmproj doesn't - need to download it
+        needsMmprojDownload = true;
+        print("⚠️  User-specified mmproj not found: $_currentMmprojFileName");
       }
     }
 
@@ -172,6 +174,7 @@ class _ChatScreenState extends State<ChatScreen> {
           builder: (context) => _DownloadDialog(
             repoId: _currentRepoId,
             filename: _currentFileName,
+            mmprojFilename: _currentMmprojFileName,
             savePath: savePath,
             onComplete: (modelPath, mmproj) {
               mmprojPath = mmproj;
@@ -187,11 +190,6 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mmprojPath != null) {
         print("✓ Multimodal projector found: $mmprojPath");
       }
-    }
-
-    // If model was already downloaded, check for existing mmproj
-    if (!needsDownload && mmprojPath == null) {
-      mmprojPath = _findExistingMmprojFile(dir.path, _currentFileName);
     }
 
     // Debug logging
@@ -236,39 +234,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Find existing mmproj file in the same directory as the model
-  String? _findExistingMmprojFile(String dirPath, String modelFileName) {
-    final dir = Directory(dirPath);
-    if (!dir.existsSync()) return null;
-
-    // Extract base model name
-    String baseName = modelFileName
-        .replaceAll(RegExp(r'-Q\d+_[KML_]+.*\.gguf', caseSensitive: false), '')
-        .replaceAll(RegExp(r'-IQ\d+_[XS]+.*\.gguf', caseSensitive: false), '')
-        .replaceAll('.gguf', '');
-
-    // Search for mmproj files
-    final files = dir.listSync();
-    for (var file in files) {
-      if (file is File) {
-        final filename = file.path.split('/').last.toLowerCase();
-        if (filename.contains('mmproj') &&
-            filename.endsWith('.gguf') &&
-            filename.contains(baseName.toLowerCase())) {
-          return file.path;
-        }
-      }
-    }
-
-    return null;
-  }
-
   /// Formats the prompt using the current chat template
-  String _formatPrompt(String userMessage, {bool hasImage = false}) {
+  String _formatPrompt(
+    String userMessage, {
+    bool hasImage = false,
+    int imageCount = 0,
+  }) {
     if (_currentTemplate == null) {
       // Fallback to simple format if no template available
       return userMessage;
     }
-    return _currentTemplate!.formatUserMessage(userMessage, hasImage: hasImage);
+    return _currentTemplate!.formatUserMessage(
+      userMessage,
+      hasImage: hasImage,
+      imageCount: imageCount,
+    );
   }
 
   /// Handles sending the prompt to the Llama model.
@@ -323,6 +303,7 @@ class _ChatScreenState extends State<ChatScreen> {
     String formattedPrompt = _formatPrompt(
       prompt.isEmpty ? "Describe this image" : prompt,
       hasImage: imagesToSend.isNotEmpty,
+      imageCount: imagesToSend.length,
     );
 
     // Stream tokens from the model with custom parameters and images
@@ -1159,6 +1140,7 @@ class _ChatBubbleState extends State<ChatBubble> {
 class _DownloadDialog extends StatefulWidget {
   final String repoId;
   final String filename;
+  final String? mmprojFilename; // User-specified mmproj filename
   final String savePath;
   final Function(String modelPath, String? mmprojPath) onComplete;
   final bool needsModel;
@@ -1167,6 +1149,7 @@ class _DownloadDialog extends StatefulWidget {
   const _DownloadDialog({
     required this.repoId,
     required this.filename,
+    this.mmprojFilename,
     required this.savePath,
     required this.onComplete,
     this.needsModel = true,
@@ -1195,6 +1178,8 @@ class _DownloadDialogState extends State<_DownloadDialog> {
         filename: widget.filename,
         savePath: widget.savePath,
         autoDownloadMmproj: widget.needsMmproj,
+        mmprojFilename:
+            widget.mmprojFilename, // Pass user-specified mmproj filename
         onProgress: (status, progress) {
           if (mounted) {
             setState(() {

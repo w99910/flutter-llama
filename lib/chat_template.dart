@@ -57,11 +57,15 @@ class ChatTemplate {
     );
   }
 
-  /// Format a single user message
+  /// Format a user message according to the template.
+  /// Set [addGenerationPrompt] to true to add the assistant prompt prefix.
+  /// [imageCount] specifies how many <image> markers to add (default 0).
   String formatUserMessage(
     String message, {
-    String? systemMessage,
     bool hasImage = false,
+    int imageCount = 0,
+    String? systemMessage,
+    bool addGenerationPrompt = true,
   }) {
     final buffer = StringBuffer();
 
@@ -75,16 +79,20 @@ class ChatTemplate {
     // Add user message
     // For SmolVLM, adjust the prefix based on whether there's an image
     String prefix = userPrefix;
-    if (name.toLowerCase().contains('vlm') && hasImage) {
+    if (name.toLowerCase().contains('vlm') && (hasImage || imageCount > 0)) {
       // Replace ': ' with ':' for SmolVLM when image is present
       prefix = prefix.replaceAll(': ', ':');
     }
 
     buffer.write(prefix);
 
-    // For multimodal models like SmolVLM, add image token if image is present
-    if (hasImage && name.toLowerCase().contains('vlm')) {
-      buffer.write('<image>');
+    // For multimodal models, add image tokens for each image
+    // The image marker should always be added when images are present
+    final actualImageCount = imageCount > 0 ? imageCount : (hasImage ? 1 : 0);
+    if (actualImageCount > 0) {
+      for (int i = 0; i < actualImageCount; i++) {
+        buffer.write('<image>');
+      }
     }
 
     buffer.write(message.trim());
