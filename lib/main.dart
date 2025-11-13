@@ -98,9 +98,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
   // String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
 
-  String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
-  String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
-  String _currentMmprojFileName = "mmproj-SmolVLM-Instruct-f16.gguf";
+  // String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
+  // String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
+  // String _currentMmprojFileName = "mmproj-SmolVLM-Instruct-f16.gguf";
+
+  String _currentRepoId = "ggml-org/SmolVLM-500M-Instruct-GGUF";
+  String _currentFileName = "SmolVLM-500M-Instruct-Q8_0.gguf";
+  String _currentMmprojFileName = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 
   // String _currentRepoId = "ggml-org/gemma-3-4b-it-GGUF";
   // String _currentFileName = "gemma-3-4b-it-Q4_K_M.gguf";

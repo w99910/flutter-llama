@@ -1,6 +1,6 @@
 PODS:
   - Flutter (1.0.0)
-  - llama_cpp_dart (0.0.8):
+  - image_picker_ios (0.0.1):
     - Flutter
   - path_provider_foundation (0.0.1):
     - Flutter
@@ -8,21 +8,21 @@ PODS:
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - llama_cpp_dart (from `.symlinks/plugins/llama_cpp_dart/ios`)
+  - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  llama_cpp_dart:
-    :path: ".symlinks/plugins/llama_cpp_dart/ios"
+  image_picker_ios:
+    :path: ".symlinks/plugins/image_picker_ios/ios"
   path_provider_foundation:
     :path: ".symlinks/plugins/path_provider_foundation/darwin"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  llama_cpp_dart: ed7450c1f1a99d5f2329e43993d75f0205c118a4
-  path_provider_foundation: 2b6b4c569c0fb62ec74538f866245ac84301af46
+  image_picker_ios: 4f2f91b01abdb52842a8e277617df877e40f905b
+  path_provider_foundation: 0b743cbb62d8e47eab856f09262bb8c1ddcfe6ba
 
 PODFILE CHECKSUM: 3ad3d4c82c793438999f0cba21dab42b24689e43
 

@@ -7,6 +7,9 @@ framework module llama {
     header "ggml-cpu.h"
     header "ggml-blas.h"
     header "gguf.h"
+    header "mtmd.h"
+    header "mtmd-helper.h"
+    header "clip.h"
 
     link "c++"
     link framework "Accelerate"

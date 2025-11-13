@@ -12,8 +12,9 @@ class LlamaService {
   ffi.Pointer<llama_model> _model = ffi.nullptr;
   ffi.Pointer<llama_context> _context = ffi.nullptr;
   ffi.Pointer<mtmd_context> _mtmdContext = ffi.nullptr;
+  bool _mtmdAvailable = false; // Track if mtmd functions are actually available
 
-  bool get supportsVision => _mtmdContext != ffi.nullptr;
+  bool get supportsVision => _mtmdContext != ffi.nullptr && _mtmdAvailable;
 
   LlamaService() {
     // Load the main llama library
@@ -21,14 +22,33 @@ class LlamaService {
     _bindings = llama_cpp(llamaLib);
 
     // Try to load mtmd library separately
+    // On iOS, mtmd functions should be in the main framework
+    // On Android, they're in a separate libmtmd.so library
     try {
-      final mtmdLib = _loadNativeLibrary('libmtmd.so');
-      _mtmdBindings = llama_cpp(mtmdLib);
-      print("✅ Multimodal library (libmtmd.so) loaded successfully");
+      if (Platform.isAndroid) {
+        final mtmdLib = _loadNativeLibrary('libmtmd.so');
+        _mtmdBindings = llama_cpp(mtmdLib);
+      } else {
+        // On iOS, use the main library (mtmd should be compiled into main framework)
+        _mtmdBindings = _bindings;
+      }
+
+      // Test if mtmd functions are available by checking for a symbol
+      try {
+        _mtmdBindings.mtmd_context_params_default();
+        _mtmdAvailable = true;
+        print("✅ Multimodal library (mtmd) loaded successfully");
+      } catch (e) {
+        _mtmdAvailable = false;
+        print("⚠️  Multimodal functions not available: $e");
+        print("   Vision/audio features will be disabled.");
+        print("   Note: Rebuild llama.cpp with LLAMA_MULTIMODAL=ON");
+        // Set to nullptr equivalent - we'll check this before using mtmd functions
+        _mtmdBindings = _bindings; // Fallback, but mtmd won't work
+      }
     } catch (e) {
       print("⚠️  Multimodal library not available: $e");
       print("   Vision/audio features will be disabled.");
-      // Use main library as fallback
       _mtmdBindings = _bindings;
     }
 
@@ -79,10 +99,21 @@ class LlamaService {
     final modelParams = _bindings.llama_model_default_params();
     // Enable GPU offloading for better performance
     // For vision models, GPU is essential for processing images in reasonable time
-    modelParams.n_gpu_layers = 999; // Offload as many layers as possible to GPU
-    print(
-      "GPU offloading enabled: n_gpu_layers=999 (vision models require GPU for acceptable performance)",
-    );
+    // On iOS, use fewer GPU layers to avoid memory issues (OOM crashes)
+    // iOS devices have limited memory compared to desktop GPUs
+    if (Platform.isIOS) {
+      modelParams.n_gpu_layers =
+          35; // Conservative value for iOS to prevent OOM
+      print(
+        "GPU offloading enabled: n_gpu_layers=35 (reduced for iOS memory constraints)",
+      );
+    } else {
+      modelParams.n_gpu_layers =
+          999; // Offload as many layers as possible to GPU
+      print(
+        "GPU offloading enabled: n_gpu_layers=999 (vision models require GPU for acceptable performance)",
+      );
+    }
 
     // Convert the Dart string path to a C-style string (Pointer<Char>)
     final pathPtr = modelPath.toNativeUtf8();
@@ -103,13 +134,23 @@ class LlamaService {
     // Customize context params if needed, e.g., context size
     // Set a larger context size for vision models to accommodate image embeddings
     // Vision models typically need 2048-4096 tokens for images + prompt + response
-    contextParams.n_ctx = mmprojPath != null ? 4096 : 2048;
+    // On iOS, use smaller context to avoid OOM
+    if (Platform.isIOS) {
+      contextParams.n_ctx = mmprojPath != null ? 2048 : 2048;
+    } else {
+      contextParams.n_ctx = mmprojPath != null ? 4096 : 2048;
+    }
 
     // CRITICAL: Set n_ubatch (micro-batch size) for vision models
     // Image embeddings can be 576+ tokens, so we need a larger ubatch size
     // This must be large enough to hold at least one image's worth of embeddings
+    // On iOS, use smaller ubatch to avoid memory issues
     if (mmprojPath != null) {
-      contextParams.n_ubatch = 2048; // Large enough for image embeddings
+      if (Platform.isIOS) {
+        contextParams.n_ubatch = 512; // Reduced for iOS memory constraints
+      } else {
+        contextParams.n_ubatch = 2048; // Large enough for image embeddings
+      }
     }
 
     print("Setting context size to: ${contextParams.n_ctx}");
@@ -131,6 +172,14 @@ class LlamaService {
 
     // Load vision projector if provided
     if (mmprojPath != null) {
+      if (!_mtmdAvailable) {
+        print("⚠️  Cannot load vision model: mtmd library not available");
+        print("   The native library was not built with multimodal support.");
+        print("   Please rebuild with LLAMA_MULTIMODAL=ON");
+        // Continue without vision support - model will work as text-only
+        return true;
+      }
+      
       print("Loading multimodal projector from: $mmprojPath");
 
       final mmprojPathPtr = mmprojPath.toNativeUtf8();
@@ -140,8 +189,10 @@ class LlamaService {
       mtmdParams.use_gpu =
           true; // Enable GPU for image processing (CRITICAL for performance)
       mtmdParams.print_timings = true;
-      mtmdParams.n_threads = 4; // Adjust as needed
+      // Use fewer threads on iOS to reduce memory pressure
+      mtmdParams.n_threads = Platform.isIOS ? 2 : 4;
       print("Multimodal projector GPU enabled for fast image processing");
+      print("Using ${mtmdParams.n_threads} threads for image processing");
 
       // Set the media marker to match the chat template
       // SmolVLM and other vision models use <image> token
