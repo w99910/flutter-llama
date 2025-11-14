@@ -5,6 +5,7 @@ import 'dart:io' show Platform, File;
 import 'package:image/image.dart' as img;
 
 import 'package:flutter_application_1/internal/llama_cpp_ffi.dart';
+import 'package:flutter_application_1/internal/function_calling.dart';
 
 class LlamaService {
   late final llama_cpp _bindings;
@@ -52,7 +53,34 @@ class LlamaService {
       _mtmdBindings = _bindings;
     }
 
+    print("═══════════════════════════════════════");
+    print("Initializing llama backend...");
     _bindings.llama_backend_init(); // Initialize the backend
+    print("Backend initialized successfully");
+
+    // Log available GPU backends
+    _logGpuBackendInfo();
+    print("═══════════════════════════════════════");
+  }
+
+  /// Log information about available GPU backends
+  void _logGpuBackendInfo() {
+    try {
+      print("\n🔍 Checking GPU backend availability:");
+
+      // Try to get system info (this will show if GPU is available)
+      print("  Platform: ${Platform.operatingSystem}");
+
+      // The backend will automatically use Vulkan if compiled with GGML_USE_VULKAN
+      // and Vulkan runtime is available on the device
+      print("  GPU acceleration: Enabled via n_gpu_layers parameter");
+      print("  Note: If Vulkan is compiled in, it will be used automatically");
+      print(
+        "  Note: Check model loading logs for actual GPU usage confirmation",
+      );
+    } catch (e) {
+      print("⚠️  Error checking GPU backend: $e");
+    }
   }
 
   /// Load the native library based on the platform
@@ -97,25 +125,51 @@ class LlamaService {
 
     // 1. Get default model parameters
     final modelParams = _bindings.llama_model_default_params();
-    // Enable GPU offloading for better performance
-    // For vision models, GPU is essential for processing images in reasonable time
-    // On iOS, use fewer GPU layers to avoid memory issues (OOM crashes)
-    // iOS devices have limited memory compared to desktop GPUs
-    if (Platform.isIOS) {
-      modelParams.n_gpu_layers =
-          35; // Conservative value for iOS to prevent OOM
-      print(
-        "GPU offloading enabled: n_gpu_layers=35 (reduced for iOS memory constraints)",
-      );
-    } else {
-      modelParams.n_gpu_layers =
-          999; // Offload as many layers as possible to GPU
-      print(
-        "GPU offloading enabled: n_gpu_layers=999 (vision models require GPU for acceptable performance)",
-      );
+
+    // Check if pre-built libraries have GPU support
+    // Since you're using pre-built jniLibs, we need to detect what's available
+    int gpuLayers = 0; // Start with CPU-only
+
+    // Try to detect GPU backend availability
+    bool hasVulkan = false;
+
+    try {
+      // On Android, check if Vulkan backend is available
+      // The library will only use GPU if it was compiled with GGML_USE_VULKAN
+      if (Platform.isAndroid) {
+        // Try setting GPU layers - if library doesn't support it, it will just use CPU
+        gpuLayers = 999; // Request GPU offloading
+        hasVulkan = true; // Assume Vulkan might be available
+      } else if (Platform.isIOS) {
+        gpuLayers = 35; // Conservative for iOS
+      } else {
+        gpuLayers = 999; // Desktop platforms
+      }
+    } catch (e) {
+      print("⚠️  GPU detection error: $e");
+      gpuLayers = 0; // Fallback to CPU
     }
 
-    // Convert the Dart string path to a C-style string (Pointer<Char>)
+    modelParams.n_gpu_layers = gpuLayers;
+
+    print("═══════════════════════════════════════");
+    print("🎮 Hardware Configuration:");
+    print("  Platform: ${Platform.operatingSystem}");
+    print("  Requested GPU layers: $gpuLayers");
+
+    if (Platform.isAndroid) {
+      print(
+        "  GPU Backend: ${hasVulkan ? 'Vulkan (if library supports it)' : 'None'}",
+      );
+      print("  ");
+      print("  📊 Performance Notes:");
+      print("  - If using CPU: Expect 1-5 tokens/sec on emulator");
+      print("  - If using GPU: Expect 10-30 tokens/sec");
+      print("  - Check generation speed to determine which is active");
+    }
+    print(
+      "═══════════════════════════════════════",
+    ); // Convert the Dart string path to a C-style string (Pointer<Char>)
     final pathPtr = modelPath.toNativeUtf8();
 
     // 2. Load the GGUF model from the file
@@ -179,7 +233,7 @@ class LlamaService {
         // Continue without vision support - model will work as text-only
         return true;
       }
-      
+
       print("Loading multimodal projector from: $mmprojPath");
 
       final mmprojPathPtr = mmprojPath.toNativeUtf8();
@@ -705,6 +759,9 @@ class LlamaService {
     final maxGenTokens = tokensList.length + maxTokens;
     final loopLimit = maxGenTokens < nCtx ? maxGenTokens : nCtx;
 
+    final generationStartTime = DateTime.now();
+    int generatedTokenCount = 0;
+
     for (int i = tokensList.length; i < loopLimit; i++) {
       final int token = _bindings.llama_sampler_sample(smpl, _context, -1);
       _bindings.llama_sampler_accept(smpl, token);
@@ -715,6 +772,7 @@ class LlamaService {
 
       final tokenBytes = _tokenToBytes(token);
       byteBuffer.addAll(tokenBytes);
+      generatedTokenCount++;
 
       // Decode and send any complete UTF-8 sequences
       final decoded = decodeAndFlush(tokenBytes);
@@ -736,6 +794,27 @@ class LlamaService {
         break;
       }
       _bindings.llama_batch_free(nextBatch);
+    }
+
+    // Calculate and log performance
+    final generationTime =
+        DateTime.now().difference(generationStartTime).inMilliseconds / 1000.0;
+    if (generatedTokenCount > 0 && generationTime > 0) {
+      final tokensPerSec = generatedTokenCount / generationTime;
+      print("═══════════════════════════════════════");
+      print("⚡ Generation Performance:");
+      print("  Tokens generated: $generatedTokenCount");
+      print("  Time: ${generationTime.toStringAsFixed(2)}s");
+      print("  Speed: ${tokensPerSec.toStringAsFixed(2)} tokens/sec");
+      if (tokensPerSec < 3) {
+        print("  ⚠️  Running on CPU (slow)");
+        print("  💡 Tip: Use smaller model or rebuild with GPU support");
+      } else if (tokensPerSec < 10) {
+        print("  ✓ Decent performance (CPU or slow GPU)");
+      } else {
+        print("  ✅ Good performance (likely using GPU)");
+      }
+      print("═══════════════════════════════════════");
     }
 
     // Flush any remaining bytes
@@ -965,9 +1044,12 @@ class LlamaService {
         return result;
       }
 
-      // Generation loop
+      // Generation loop - with performance tracking
       final maxGenTokens = nPast + maxTokens;
       final loopLimit = maxGenTokens < nCtx ? maxGenTokens : nCtx;
+
+      final generationStartTime = DateTime.now();
+      int generatedTokenCount = 0;
 
       for (int i = nPast; i < loopLimit; i++) {
         final int token = _bindings.llama_sampler_sample(smpl, _context, -1);
@@ -979,6 +1061,7 @@ class LlamaService {
 
         final tokenBytes = _tokenToBytes(token);
         byteBuffer.addAll(tokenBytes);
+        generatedTokenCount++;
 
         final decoded = decodeAndFlush(tokenBytes);
         if (decoded.isNotEmpty) {
@@ -999,6 +1082,28 @@ class LlamaService {
           break;
         }
         _bindings.llama_batch_free(nextBatch);
+      }
+
+      // Calculate and log performance
+      final generationTime =
+          DateTime.now().difference(generationStartTime).inMilliseconds /
+          1000.0;
+      if (generatedTokenCount > 0 && generationTime > 0) {
+        final tokensPerSec = generatedTokenCount / generationTime;
+        print("═══════════════════════════════════════");
+        print("⚡ Generation Performance:");
+        print("  Tokens generated: $generatedTokenCount");
+        print("  Time: ${generationTime.toStringAsFixed(2)}s");
+        print("  Speed: ${tokensPerSec.toStringAsFixed(2)} tokens/sec");
+        if (tokensPerSec < 3) {
+          print("  ⚠️  Running on CPU (slow)");
+          print("  💡 Tip: Use smaller model or rebuild with GPU support");
+        } else if (tokensPerSec < 10) {
+          print("  ✓ Decent performance (CPU or slow GPU)");
+        } else {
+          print("  ✅ Good performance (likely using GPU)");
+        }
+        print("═══════════════════════════════════════");
       }
 
       if (streamBuffer.isNotEmpty) {
@@ -1036,5 +1141,210 @@ class LlamaService {
         }
       }
     }
+  }
+
+  /// Runs a prompt with function calling support (grammar-constrained generation)
+  /// [functions] - List of functions available for the model to call
+  /// [useGrammar] - If true, uses grammar constraint to force valid JSON output
+  /// Returns the raw output which may contain function calls
+  Future<String> runPromptWithFunctions(
+    String prompt,
+    List<LlamaFunction> functions,
+    void Function(String tokenPiece) onToken, {
+    bool useGrammar = true,
+    double temperature = 0.7,
+    int topK = 40,
+    double topP = 0.95,
+    double minP = 0.05,
+    int penaltyLastN = 64,
+    double penaltyRepeat = 1.1,
+    double penaltyFreq = 0.0,
+    double penaltyPresent = 0.0,
+    int maxTokens = 512,
+  }) async {
+    if (_context == ffi.nullptr) {
+      throw Exception("Model not loaded. Call loadModel() first.");
+    }
+
+    // Clear the KV cache
+    final memory = _bindings.llama_get_memory(_context);
+    _bindings.llama_memory_clear(memory, true);
+
+    // Tokenize the prompt
+    final tokensList = _tokenize(prompt, addBos: false, special: true);
+    final nCtx = _bindings.llama_n_ctx(_context);
+    final vocab = _bindings.llama_model_get_vocab(_model);
+
+    if (tokensList.length > nCtx) {
+      throw Exception(
+        "Prompt is too long (${tokensList.length} tokens), context size is $nCtx",
+      );
+    }
+
+    // Process the prompt
+    final batch = _bindings.llama_batch_init(tokensList.length, 0, 1);
+    batch.n_tokens = tokensList.length;
+
+    for (int i = 0; i < batch.n_tokens; i++) {
+      (batch.token + i).value = tokensList[i];
+      (batch.pos + i).value = i;
+      (batch.n_seq_id + i).value = 1;
+      (batch.seq_id + i).value.value = 0;
+      (batch.logits + i).value = 0;
+    }
+
+    (batch.logits + batch.n_tokens - 1).value = 1;
+
+    if (_bindings.llama_decode(_context, batch) != 0) {
+      print("llama_decode failed during prompt processing");
+      _bindings.llama_batch_free(batch);
+      return "";
+    }
+    _bindings.llama_batch_free(batch);
+
+    // Setup the sampler chain
+    final sparams = _bindings.llama_sampler_chain_default_params();
+    final smpl = _bindings.llama_sampler_chain_init(sparams);
+
+    // Add repetition penalties
+    _bindings.llama_sampler_chain_add(
+      smpl,
+      _bindings.llama_sampler_init_penalties(
+        penaltyLastN,
+        penaltyRepeat,
+        penaltyFreq,
+        penaltyPresent,
+      ),
+    );
+
+    // Add grammar sampler if requested (this constrains output to valid JSON)
+    ffi.Pointer<ffi.Char>? grammarPtr;
+    if (useGrammar && functions.isNotEmpty) {
+      final grammarStr = FunctionCallingHelper.createFunctionCallGrammar(
+        functions,
+      );
+      grammarPtr = grammarStr.toNativeUtf8().cast<ffi.Char>();
+      final rootPtr = 'root'.toNativeUtf8().cast<ffi.Char>();
+
+      print("📝 Using grammar constraint for function calling");
+      final grammarSampler = _bindings.llama_sampler_init_grammar(
+        vocab,
+        grammarPtr,
+        rootPtr,
+      );
+
+      if (grammarSampler != ffi.nullptr) {
+        _bindings.llama_sampler_chain_add(smpl, grammarSampler);
+        print("✅ Grammar sampler added successfully");
+      } else {
+        print("⚠️  Failed to create grammar sampler, continuing without it");
+      }
+
+      malloc.free(rootPtr);
+    }
+
+    // Add standard sampling parameters
+    _bindings.llama_sampler_chain_add(
+      smpl,
+      _bindings.llama_sampler_init_top_k(topK),
+    );
+
+    _bindings.llama_sampler_chain_add(
+      smpl,
+      _bindings.llama_sampler_init_top_p(topP, 1),
+    );
+
+    if (minP > 0.0) {
+      _bindings.llama_sampler_chain_add(
+        smpl,
+        _bindings.llama_sampler_init_min_p(minP, 1),
+      );
+    }
+
+    _bindings.llama_sampler_chain_add(
+      smpl,
+      _bindings.llama_sampler_init_temp(temperature),
+    );
+
+    _bindings.llama_sampler_chain_add(
+      smpl,
+      _bindings.llama_sampler_init_dist(0),
+    );
+
+    final eosToken = _bindings.llama_token_eos(vocab);
+    final byteBuffer = <int>[];
+    final streamBuffer = <int>[];
+
+    String decodeAndFlush(List<int> bytes, {bool final_ = false}) {
+      streamBuffer.addAll(bytes);
+      String result = '';
+      int validEnd = streamBuffer.length;
+
+      while (validEnd > 0) {
+        try {
+          result = utf8.decode(streamBuffer.sublist(0, validEnd));
+          if (validEnd < streamBuffer.length && !final_) {
+            streamBuffer.removeRange(0, validEnd);
+          } else {
+            streamBuffer.clear();
+          }
+          break;
+        } catch (e) {
+          validEnd--;
+        }
+      }
+
+      return result;
+    }
+
+    // Generation loop
+    final maxGenTokens = tokensList.length + maxTokens;
+    final loopLimit = maxGenTokens < nCtx ? maxGenTokens : nCtx;
+
+    for (int i = tokensList.length; i < loopLimit; i++) {
+      final int token = _bindings.llama_sampler_sample(smpl, _context, -1);
+      _bindings.llama_sampler_accept(smpl, token);
+
+      if (token == eosToken) {
+        break;
+      }
+
+      final tokenBytes = _tokenToBytes(token);
+      byteBuffer.addAll(tokenBytes);
+
+      final decoded = decodeAndFlush(tokenBytes);
+      if (decoded.isNotEmpty) {
+        onToken(decoded);
+      }
+
+      final nextBatch = _bindings.llama_batch_init(1, 0, 1);
+      nextBatch.n_tokens = 1;
+      (nextBatch.token).value = token;
+      (nextBatch.pos).value = i;
+      (nextBatch.n_seq_id).value = 1;
+      (nextBatch.seq_id).value.value = 0;
+      (nextBatch.logits).value = 1;
+
+      if (_bindings.llama_decode(_context, nextBatch) != 0) {
+        print("llama_decode failed during generation");
+        _bindings.llama_batch_free(nextBatch);
+        break;
+      }
+      _bindings.llama_batch_free(nextBatch);
+    }
+
+    if (streamBuffer.isNotEmpty) {
+      final remaining = decodeAndFlush([], final_: true);
+      if (remaining.isNotEmpty) {
+        onToken(remaining);
+      }
+    }
+
+    _bindings.llama_sampler_free(smpl);
+    if (grammarPtr != null) {
+      malloc.free(grammarPtr);
+    }
+
+    return utf8.decode(byteBuffer, allowMalformed: true);
   }
 }

@@ -7,6 +7,7 @@ import 'package:flutter_application_1/chat_template.dart';
 import 'package:flutter_application_1/internal/huggingface.dart';
 import 'package:flutter_application_1/internal/llama_request.dart';
 import 'package:flutter_application_1/lcontroller.dart';
+import 'package:flutter_application_1/screens/chat_launcher_screen.dart';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:image_picker/image_picker.dart';
@@ -95,13 +96,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // See VISION_MODELS.md for more vision model options
 
   // Current: Qwen3 (text-only) - fast and efficient
-  // String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
-  // String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
-  // String? _currentMmprojFileName;
+  String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
+  String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
+  String? _currentMmprojFileName;
 
-  String _currentRepoId = "Qwen/Qwen3-VL-2B-Thinking-GGUF";
-  String _currentFileName = "Qwen3VL-2B-Thinking-Q4_K_M.gguf";
-  String? _currentMmprojFileName = "mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf";
+  // String _currentRepoId = "Qwen/Qwen3-VL-2B-Thinking-GGUF";
+  // String _currentFileName = "Qwen3VL-2B-Thinking-Q4_K_M.gguf";
+  // String? _currentMmprojFileName = "mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf";
 
   // String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
   // String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
@@ -761,6 +762,18 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.functions),
+            tooltip: 'AI Assistant with Tools',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AutoFunctionChatWrapper(),
+                ),
+              );
+            },
+          ),
           // Change Model button
           IconButton(
             icon: const Icon(Icons.swap_horiz),

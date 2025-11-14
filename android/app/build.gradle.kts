@@ -38,7 +38,9 @@ android {
     externalNativeBuild {
         // cmake {
             // Points to your CMakeLists.txt file
+            // Disabled because using pre-built jniLibs
         //    path = file("src/main/cpp/CMakeLists.txt")
+        //    version = "3.22.1"
         // }
     }
 
