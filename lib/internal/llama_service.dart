@@ -5,6 +5,7 @@ import 'dart:io' show Platform, File;
 import 'package:image/image.dart' as img;
 
 import 'package:flutter_application_1/internal/llama_cpp_ffi.dart';
+import 'package:flutter_application_1/tool_calling.dart';
 
 class LlamaService {
   late final llama_cpp _bindings;
@@ -1036,5 +1037,111 @@ class LlamaService {
         }
       }
     }
+  }
+
+  /// Run prompt with tool calling support
+  /// This method handles multi-turn tool calling automatically
+  Future<String> runPromptWithTools(
+    String prompt,
+    void Function(String tokenPiece) onToken,
+    ToolRegistry toolRegistry, {
+    double temperature = 0.8,
+    int topK = 40,
+    double topP = 0.95,
+    double minP = 0.05,
+    int penaltyLastN = 64,
+    double penaltyRepeat = 1.3,
+    double penaltyFreq = 0.2,
+    double penaltyPresent = 0.1,
+    int maxTokens = 2048 * 4,
+    List<String>? imagePaths,
+    int maxToolCalls = 5,
+  }) async {
+    final conversationBuffer = StringBuffer();
+    String currentPrompt = prompt;
+    int toolCallCount = 0;
+
+    // Main loop: keep generating until no more tool calls or max iterations
+    while (toolCallCount < maxToolCalls) {
+      final responseBuffer = StringBuffer();
+
+      // Generate response
+      await runPromptStreaming(
+        currentPrompt,
+        (tokenPiece) {
+          responseBuffer.write(tokenPiece);
+          // Only stream tokens if not a tool call
+          if (!ToolCallParser.hasToolCalls(responseBuffer.toString())) {
+            onToken(tokenPiece);
+          }
+        },
+        temperature: temperature,
+        topK: topK,
+        topP: topP,
+        minP: minP,
+        penaltyLastN: penaltyLastN,
+        penaltyRepeat: penaltyRepeat,
+        penaltyFreq: penaltyFreq,
+        penaltyPresent: penaltyPresent,
+        maxTokens: maxTokens,
+        imagePaths: imagePaths,
+      );
+
+      final response = responseBuffer.toString();
+      conversationBuffer.write(response);
+
+      // Check if response contains tool calls
+      if (!ToolCallParser.hasToolCalls(response)) {
+        // No tool calls, we're done
+        break;
+      }
+
+      toolCallCount++;
+      print('🔧 Tool call detected (#$toolCallCount)');
+
+      // Parse tool calls
+      final toolCalls = ToolCallParser.parseToolCalls(response);
+      if (toolCalls.isEmpty) {
+        print('⚠️  Tool call tags found but failed to parse');
+        break;
+      }
+
+      // Execute tool calls and collect results
+      final toolResults = <String>[];
+      for (final toolCall in toolCalls) {
+        print(
+          'Executing tool: ${toolCall.name} with args: ${toolCall.arguments}',
+        );
+        try {
+          final result = toolRegistry.executeToolCall(toolCall);
+          print('Tool result: $result');
+          toolResults.add(formatToolResult(toolCall.name, result));
+
+          // Stream the tool result to UI
+          onToken(
+            '\n[Tool: ${toolCall.name}(${toolCall.arguments}) = $result]\n',
+          );
+        } catch (e) {
+          print('Tool execution error: $e');
+          toolResults.add(
+            formatToolResult(toolCall.name, {'error': e.toString()}),
+          );
+        }
+      }
+
+      // Extract text before tool calls
+      final textBeforeTools = ToolCallParser.extractTextBeforeToolCalls(
+        response,
+      );
+
+      // Build next prompt with tool results
+      currentPrompt =
+          '''$textBeforeTools
+${toolResults.join('\n')}
+
+Please continue your response using the tool results above.''';
+    }
+
+    return conversationBuffer.toString();
   }
 }

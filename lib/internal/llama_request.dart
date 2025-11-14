@@ -1,4 +1,5 @@
 import 'dart:isolate';
+import 'package:flutter_application_1/tool_calling.dart';
 
 // Parameters for text generation
 class GenerationParams {
@@ -31,12 +32,16 @@ class LlamaRequest {
   final String prompt;
   final GenerationParams params;
   final List<String>? imagePaths; // Optional image paths for vision models
+  final ToolRegistry? toolRegistry; // Optional tool registry for tool calling
+  final bool useTools; // Whether to use tool calling
 
   LlamaRequest(
     this.port,
     this.prompt, {
     this.params = const GenerationParams(),
     this.imagePaths,
+    this.toolRegistry,
+    this.useTools = false,
   });
 }
 

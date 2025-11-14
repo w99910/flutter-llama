@@ -3,13 +3,17 @@ import 'package:flutter/material.dart';
 // Correct imports for FFI and Platform detection
 import 'dart:io';
 
+
 import 'package:flutter_application_1/chat_template.dart';
 import 'package:flutter_application_1/internal/huggingface.dart';
 import 'package:flutter_application_1/internal/llama_request.dart';
 import 'package:flutter_application_1/lcontroller.dart';
+import 'package:flutter_application_1/tool_calling.dart';
+import 'package:flutter_application_1/built_in_tools.dart';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:image_picker/image_picker.dart';
+
 
 // STEP 1: DEFINE A DATA CLASS TO PASS ARGUMENTS (BEST PRACTICE)
 
@@ -67,6 +71,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // The controller that manages the background isolate and Llama service.
   LlamaController _controller = LlamaController();
 
+  // Tool registry for function calling
+  late final ToolRegistry _toolRegistry;
+  bool _useToolCalling = true; // Toggle for tool calling
+
   // UI state variables
   bool _isModelReady = false;
   bool _isAssistantTyping = false;
@@ -95,13 +103,14 @@ class _ChatScreenState extends State<ChatScreen> {
   // See VISION_MODELS.md for more vision model options
 
   // Current: Qwen3 (text-only) - fast and efficient
-  // String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
-  // String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
-  // String? _currentMmprojFileName;
+  String _currentRepoId = "unsloth/Qwen3-0.6B-GGUF";
+  String _currentFileName = "Qwen3-0.6B-Q4_K_M.gguf";
+  String? _currentMmprojFileName;
 
-  String _currentRepoId = "Qwen/Qwen3-VL-2B-Thinking-GGUF";
-  String _currentFileName = "Qwen3VL-2B-Thinking-Q4_K_M.gguf";
-  String? _currentMmprojFileName = "mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf";
+  //  String _currentRepoId = "Qwen/Qwen3-VL-2B-Thinking-GGUF";
+  //   String _currentFileName = "Qwen3VL-2B-Thinking-Q4_K_M.gguf";
+  //   String? _currentMmprojFileName = "mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf";
+ 
 
   // String _currentRepoId = "ggml-org/SmolVLM-Instruct-GGUF";
   // String _currentFileName = "SmolVLM-Instruct-Q4_K_M.gguf";
@@ -134,6 +143,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    // Initialize tool registry with built-in tools
+    _toolRegistry = createBuiltInTools();
     _initializeLlama();
   }
 
@@ -253,8 +264,19 @@ class _ChatScreenState extends State<ChatScreen> {
       // Fallback to simple format if no template available
       return userMessage;
     }
+    
+    String baseMessage = userMessage;
+
+    // Add tool definitions if tool calling is enabled
+    if (_useToolCalling) {
+      final toolsPrompt = formatToolsForPrompt(_toolRegistry);
+      if (toolsPrompt.isNotEmpty) {
+        baseMessage = '$toolsPrompt\n\nUser: $userMessage';
+      }
+    }
+    
     return _currentTemplate!.formatUserMessage(
-      userMessage,
+      baseMessage,
       hasImage: hasImage,
       imageCount: imageCount,
     );
@@ -322,6 +344,8 @@ class _ChatScreenState extends State<ChatScreen> {
       formattedPrompt,
       params: params,
       imagePaths: imagesToSend.isNotEmpty ? imagesToSend : null,
+      toolRegistry: _useToolCalling ? _toolRegistry : null,
+      useTools: _useToolCalling,
     )) {
       tokenCount++;
       print("Received token #$tokenCount: '$tokenPiece'");
@@ -700,6 +724,21 @@ class _ChatScreenState extends State<ChatScreen> {
                         fontSize: 12,
                         fontStyle: FontStyle.italic,
                       ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Tool Calling Toggle
+                    SwitchListTile(
+                      title: const Text('Enable Tool Calling'),
+                      subtitle: const Text(
+                        'Allow model to call functions (e.g., add, subtract)',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      value: _useToolCalling,
+                      onChanged: (value) {
+                        setDialogState(() => _useToolCalling = value);
+                        setState(() => _useToolCalling = value);
+                      },
                     ),
                   ],
                 ),

@@ -2,6 +2,7 @@ import 'dart:isolate';
 
 import 'package:flutter_application_1/internal/llama_request.dart';
 import 'package:flutter_application_1/internal/llama_isolate.dart';
+import 'package:flutter_application_1/tool_calling.dart';
 import 'package:path_provider/path_provider.dart';
 
 class LlamaController {
@@ -56,6 +57,8 @@ class LlamaController {
     String prompt, {
     GenerationParams? params,
     List<String>? imagePaths,
+    ToolRegistry? toolRegistry,
+    bool useTools = false,
   }) async* {
     if (_llamaSendPort == null) {
       yield "Error: Llama isolate is not initialized or failed to load model.";
@@ -69,6 +72,8 @@ class LlamaController {
         prompt,
         params: params ?? const GenerationParams(),
         imagePaths: imagePaths,
+        toolRegistry: toolRegistry,
+        useTools: useTools,
       ),
     );
 

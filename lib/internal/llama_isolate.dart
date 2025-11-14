@@ -31,30 +31,58 @@ void llamaIsolateEntry(Map<String, dynamic> args) async {
       final prompt = message.prompt;
       final params = message.params;
       final imagePaths = message.imagePaths;
+      final toolRegistry = message.toolRegistry;
+      final useTools = message.useTools;
+      
       print("Llama Isolate: Received prompt: '$prompt'");
       if (imagePaths != null && imagePaths.isNotEmpty) {
         print(
           "Llama Isolate: Received ${imagePaths.length} image(s): $imagePaths",
         );
       }
+      if (useTools && toolRegistry != null) {
+        print("Llama Isolate: Tool calling enabled");
+      }
 
-      // Stream tokens back to the UI as they're generated with custom parameters
-      await llamaService.runPromptStreaming(
-        prompt,
-        (tokenPiece) {
-          message.port.send(LlamaResponse(tokenPiece, isComplete: false));
-        },
-        temperature: params.temperature,
-        topK: params.topK,
-        topP: params.topP,
-        minP: params.minP,
-        penaltyLastN: params.penaltyLastN,
-        penaltyRepeat: params.penaltyRepeat,
-        penaltyFreq: params.penaltyFreq,
-        penaltyPresent: params.penaltyPresent,
-        maxTokens: params.maxTokens,
-        imagePaths: imagePaths,
-      );
+      // Check if we should use tool calling
+      if (useTools && toolRegistry != null) {
+        // Use tool calling
+        await llamaService.runPromptWithTools(
+          prompt,
+          (tokenPiece) {
+            message.port.send(LlamaResponse(tokenPiece, isComplete: false));
+          },
+          toolRegistry,
+          temperature: params.temperature,
+          topK: params.topK,
+          topP: params.topP,
+          minP: params.minP,
+          penaltyLastN: params.penaltyLastN,
+          penaltyRepeat: params.penaltyRepeat,
+          penaltyFreq: params.penaltyFreq,
+          penaltyPresent: params.penaltyPresent,
+          maxTokens: params.maxTokens,
+          imagePaths: imagePaths,
+        );
+      } else {
+        // Normal streaming without tools
+        await llamaService.runPromptStreaming(
+          prompt,
+          (tokenPiece) {
+            message.port.send(LlamaResponse(tokenPiece, isComplete: false));
+          },
+          temperature: params.temperature,
+          topK: params.topK,
+          topP: params.topP,
+          minP: params.minP,
+          penaltyLastN: params.penaltyLastN,
+          penaltyRepeat: params.penaltyRepeat,
+          penaltyFreq: params.penaltyFreq,
+          penaltyPresent: params.penaltyPresent,
+          maxTokens: params.maxTokens,
+          imagePaths: imagePaths,
+        );
+      }
 
       // Send final completion signal
       message.port.send(LlamaResponse('', isComplete: true));
